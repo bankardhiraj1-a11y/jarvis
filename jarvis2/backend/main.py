@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 from config import get_settings
 from database import get_db, engine, Base, SessionLocal
+from trading.manual_gold_holding import manual_gold_holding_decision
+from trading.paper_strategy_corrections import (
+    correct_time_exit, correction_for_trade, PaperTradeCorrectionError,
+)
 from models import Trade, Position, AgentMetrics, MarketData, AgentName, TradeType, PaperLimitOrder, ManualPaperOrder
 from agents.stocks import StocksAgent
 from agents.sensex import SensexAgent
@@ -647,7 +651,9 @@ def _monitor_open_trade(db, trade, agent_name):
         now=now_utc,
         holding_intent=holding_intent,
     )
-    if general_manual_order:
+    if manual_gold_order:
+        holding = manual_gold_holding_decision(entry_event_time, now_utc)
+    elif general_manual_order:
         holding = manual_holding_decision(
             general_manual_order,
             _provider_time(trade.entry_data_timestamp) or _provider_time(trade.created_at),
@@ -659,7 +665,8 @@ def _monitor_open_trade(db, trade, agent_name):
     if agent_name == "XAUUSD":
         created_utc = entry_event_time or _provider_time(trade.created_at)
         gold_deadline = (
-            created_utc + timedelta(minutes=25) if created_utc is not None else None
+            created_utc + timedelta(minutes=25)
+            if created_utc is not None and not manual_gold_order else None
         )
         gold_time_due = bool(gold_deadline and now_utc >= gold_deadline)
         gold_session_exit_due = not manual_gold_order and bool(
@@ -2694,6 +2701,7 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
 
         result.append({
             "id": t.id,
+            "paper_correction": correction_for_trade(db, t.id),
             "paper_order_id": (
                 f"manual-{manual_order.id}" if isinstance(manual_order, ManualPaperOrder)
                 else manual_order.id if manual_order else None
@@ -2747,6 +2755,57 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
         })
 
     return result
+
+@app.post("/paper/orders/{order_id}/correct-time-exit")
+async def correct_manual_gold_time_exit(
+    order_id: int, payload: dict = Body(...), db: Session = Depends(get_db)
+):
+    """Audited PAPER strategy correction; no broker execution or new entry."""
+    if not settings.PAPER_TRADING_ENABLED or payload.get("mode") != "PAPER":
+        raise HTTPException(403, "Only enabled PAPER corrections are supported")
+    if payload.get("acknowledge_strategy_correction") is not True:
+        raise HTTPException(400, "Explicit acknowledgement of corrected PAPER history is required")
+    order = db.query(PaperLimitOrder).filter(PaperLimitOrder.id == order_id).one_or_none()
+    if order is None:
+        raise HTTPException(404, "Manual paper order not found")
+    legs = db.query(Trade).filter(
+        Trade.id.in_([order.first_trade_id, order.second_trade_id])
+    ).all()
+    previous_times = [
+        _provider_time(t.exit_data_timestamp) for t in legs if t.exit_data_timestamp
+    ]
+    quote = getattr(onda_client, "latest_prices", {}).get("XAUUSD")
+    now_utc = datetime.now(timezone.utc)
+    if not isinstance(quote, dict) or not quote_is_fresh(quote):
+        raise HTTPException(409, "Fresh OANDA data is required; nothing was changed")
+    entry_time = _provider_time(order.filled_at)
+    if manual_gold_holding_decision(entry_time, now_utc)["due"]:
+        raise HTTPException(409, "Rollover/session safety cutoff prevents resumed monitoring")
+    observations = []
+    try:
+        import sqlite3
+        with sqlite3.connect(
+            f"file:{xau_observation_recorder.path}?mode=ro", uri=True, timeout=5
+        ) as evidence:
+            since = min(previous_times).isoformat() if previous_times else now_utc.isoformat()
+            rows = evidence.execute(
+                "SELECT exchange_trade_timestamp,snapshot_json FROM observations "
+                "WHERE symbol = ? AND exchange_trade_timestamp > ? "
+                "ORDER BY exchange_trade_timestamp",
+                ("XAUUSD", since),
+            ).fetchall()
+        for timestamp, snapshot in rows:
+            observed = json.loads(snapshot)
+            observed["provider_timestamp"] = timestamp
+            observations.append(observed)
+        return correct_time_exit(
+            db, order_id, payload.get("request_id"), observations, quote, now=now_utc
+        )
+    except PaperTradeCorrectionError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        raise HTTPException(503, "Recorded OANDA evidence is unavailable; nothing was changed") from None
+
 
 @app.get("/learning/analysis/{agent}")
 async def get_agent_analysis(agent: str, db: Session = Depends(get_db)):

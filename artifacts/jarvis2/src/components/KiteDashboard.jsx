@@ -106,6 +106,7 @@ export default function KiteDashboard() {
   const inFlight = useRef(false);
   const hasLoaded = useRef(false);
   const ordersRequest = useRef(0);
+  const lastCorrection = useRef('');
 
   const refresh = useCallback(async (manual = false) => {
     if (inFlight.current) return;
@@ -138,7 +139,19 @@ export default function KiteDashboard() {
       }));
 
       if (payloads[0] && typeof payloads[0] === 'object') setPortfolio(payloads[0]);
-      if (Array.isArray(payloads[1])) setTrades(payloads[1]);
+      if (Array.isArray(payloads[1])) {
+        setTrades(payloads[1]);
+        const correction = payloads[1]
+          .filter((trade) => trade.status === 'OPEN' && trade.paper_correction)
+          .map((trade) => trade.paper_correction.corrected_at)
+          .sort().at(-1);
+        if (correction && correction !== lastCorrection.current) {
+          lastCorrection.current = correction;
+          setActiveTab('active');
+          setAgentFilter('ALL');
+          setSearchTerm('');
+        }
+      }
       else if (payloads[1] !== null) failed.push('trades response');
       if (payloads[2] && typeof payloads[2] === 'object' && !Array.isArray(payloads[2])) {
         setPerformance(payloads[2]);
@@ -613,7 +626,9 @@ export default function KiteDashboard() {
                     return (
                       <tr id={`trade-${trade.id}`} key={trade.id} data-testid={`row-trade-${trade.id}`}>
                         <td className="symbol-cell" data-testid={`text-symbol-${trade.id}`}>{trade.symbol || '—'}</td>
-                        <td><span className="agent-name-cell">{formatAgent(trade.agent)}</span></td>
+                        <td><span className="agent-name-cell">{formatAgent(trade.agent)}</span>
+                          {trade.paper_correction && <small title={`${trade.paper_correction.replay_data_note} Prior timed close: ${trade.paper_correction.original_close.exit_price} at ${trade.paper_correction.original_close.exit_data_timestamp}`} style={{ display: 'block', color: '#f7b955' }}>Strategy-corrected PAPER</small>}
+                        </td>
                         <td><span className={`signal-label ${(trade.signal || trade.type || '').toUpperCase() === 'SELL' ? 'sell' : 'buy'}`}>{trade.signal || trade.type || '—'}</span></td>
                         <td>{tradeQuantity(trade)}</td>
                         <td>{currency(trade.entry_price, code)}</td>

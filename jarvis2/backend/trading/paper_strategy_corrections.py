@@ -17,6 +17,7 @@ _UTC = timezone.utc
 _MAX_CURRENT_QUOTE_AGE_SECONDS = 15.0
 _REPLAY_NOTE = (
     "Sampled provider observations; unobserved intratick movements unknown. "
+    "Historical samples may lack tradeability flags and are price evidence, not verified executions. "
     "This is a strategy-corrected PAPER simulation, not uninterrupted forward results."
 )
 _AUDIT_LABEL = "Strategy-corrected PAPER; prior timed close retained"
@@ -94,7 +95,9 @@ def _validated_quote(value: Any, *, now_utc: Optional[datetime] = None) -> dict[
     environment = str(quote.get("environment") or "").strip().lower()
     if environment not in {"practice", "live"}:
         raise PaperTradeCorrectionError("OANDA quote environment must be practice or live")
-    if quote.get("tradeable") is not True:
+    if quote.get("tradeable") is False or (
+        now_utc is not None and quote.get("tradeable") is not True
+    ):
         raise PaperTradeCorrectionError("OANDA quote must be explicitly tradeable")
     if quote.get("stale") is True or quote.get("timestamp_basis") == "receipt":
         raise PaperTradeCorrectionError("Quote is stale or has receipt-time provenance")

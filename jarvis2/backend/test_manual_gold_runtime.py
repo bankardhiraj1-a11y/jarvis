@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from database import Base
 from models import Trade
-from trading.holding_policy import holding_exit_decision
+from trading.holding_policy import holding_exit_decision, next_gold_rollover_deadline
+from trading.manual_gold_holding import manual_gold_holding_decision
 from trading.paper_limit_orders import (
     create_order, manual_order_for_trade, process_pending_orders,
 )
@@ -70,6 +71,7 @@ def manual_monitor():
             "general_manual_order_for_trade": lambda _db, _trade_id: None,
             "_provider_time": lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00")),
             "holding_exit_decision": holding_exit_decision,
+            "manual_gold_holding_decision": manual_gold_holding_decision,
             "agents_map": {"XAUUSD": SimpleNamespace(
                 should_force_research_time_exit=lambda _: True,
                 mark_research_position_closed=lambda: closed.append(True),
@@ -105,16 +107,17 @@ def test_tp1_and_tp2_exit_separately_at_executable_quotes(manual_monitor):
     assert legs[1].exit_price == 4150.8
 
 
-def test_manual_maximum_hold_still_closes_without_target(manual_monitor):
+def test_manual_elapsed_hold_does_not_close_without_target(manual_monitor):
     db, legs, monitor, clock, _ = manual_monitor
     clock["now"] = NOW + timedelta(minutes=25)
-    assert monitor(db, legs[0], "XAUUSD")[0] == "TRADE_CLOSED"
-    assert legs[0].exit_price == 4175.0
+    assert monitor(db, legs[0], "XAUUSD")[0] == "PAPER_POSITION_OPEN"
+    assert legs[0].status == "OPEN"
+    assert legs[0].exit_price is None
 
 
-def test_overdue_manual_exit_waits_for_real_quote(manual_monitor):
+def test_rollover_manual_exit_waits_for_real_quote(manual_monitor):
     db, legs, monitor, clock, _ = manual_monitor
-    clock["now"] = NOW + timedelta(minutes=25)
+    clock["now"] = next_gold_rollover_deadline(NOW) - timedelta(minutes=1)
     clock["fresh"] = False
     assert monitor(db, legs[0], "XAUUSD")[0] == "EXIT_PENDING_QUOTE"
     assert legs[0].status == "OPEN"

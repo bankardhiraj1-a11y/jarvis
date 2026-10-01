@@ -115,7 +115,7 @@ export default function ManualOrderForm({ apiRoot, onSuccess, onClose }) {
     if (!positiveNumber(takeProfit)) return 'Enter a positive first take-profit price.';
     if (takeProfitTwo && !positiveNumber(takeProfitTwo)) return 'Enter a positive second take-profit price or leave it blank.';
     const hold = Number(maxHoldMinutes);
-    if (!Number.isInteger(hold) || hold < 1 || hold > holdMaximum) return 'Maximum hold must be a whole number from 1 to 25 minutes.';
+    if (!isGold && (!Number.isInteger(hold) || hold < 1 || hold > holdMaximum)) return 'Maximum hold must be a whole number from 1 to 25 minutes.';
     if (isOption) {
       if (!Number.isInteger(Number(quantityLots)) || Number(quantityLots) < 1) return 'Option quantity must be at least one whole lot.';
       if (!positiveNumber(strike)) return 'Enter a positive option strike.';
@@ -156,7 +156,7 @@ export default function ManualOrderForm({ apiRoot, onSuccess, onClose }) {
       option_type: isOption ? optionType : null,
       strike: isOption ? Number(strike) : null,
       expiry: isOption ? expiry : null,
-      max_hold_minutes: Number(maxHoldMinutes),
+      max_hold_minutes: isGold ? null : Number(maxHoldMinutes),
       client_order_id: clientOrderId,
     };
 
@@ -307,10 +307,10 @@ export default function ManualOrderForm({ apiRoot, onSuccess, onClose }) {
               <span>Take profit 2 · {isGold ? 'USD' : 'INR'} · optional{isOption ? ' · 2+ lots' : ''}</span>
               <input type="number" min="0.01" step="any" value={takeProfitTwo} onChange={(event) => setTakeProfitTwo(event.target.value)} />
             </label>
-            <label>
+            {!isGold && <label>
               <span>Max hold · minutes (1–25)</span>
               <input type="number" min="1" max={holdMaximum} step="1" value={maxHoldMinutes} onChange={(event) => setMaxHoldMinutes(event.target.value)} required />
-            </label>
+            </label>}
           </div>
 
           {!availableSymbols.length && (
@@ -318,6 +318,7 @@ export default function ManualOrderForm({ apiRoot, onSuccess, onClose }) {
               The server configuration does not list an available {isOption ? 'supported options underlying' : 'instrument'} for this market.
             </p>
           )}
+          {isGold && <p className="manual-order-note">Manual Gold: stop/targets manage exits, without a 25-minute timer. Rollover/session safety still applies.</p>}
           {isOption && (
             <p className="manual-order-note">Options open with BUY CE/PE only. Naked SELL orders are unavailable.</p>
           )}
