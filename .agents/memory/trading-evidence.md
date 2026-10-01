@@ -26,3 +26,9 @@ An exchange last-trade timestamp is not a bid/ask depth-update timestamp.
 **Why:** The provider returns observed market depth alongside the time of the last transaction, not the time each quoted side changed.
 
 **How to apply:** Retain observation and trade times separately. Filter stale data conservatively, and never describe receipt time or last-trade time as verified depth-update provenance.
+
+OANDA practice and live API authorization must be verified separately. A successful practice pricing response is genuine provider evidence, but does not establish live-account authorization or validated paper performance.
+
+**Why:** Verification succeeded for practice account/pricing endpoints while the live account endpoint rejected the same token. Silently dropping the environment label would misrepresent the source.
+
+**How to apply:** Preserve practice/live environment with every observation, discover an account only when exactly one is authorized, and keep data collection separate from trade-entry approval.

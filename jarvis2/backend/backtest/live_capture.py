@@ -16,9 +16,13 @@ class LiveObservationRecorder:
         "timestamp", "received_at", "observed_at", "received_at_timestamp",
         "timestamp_kind", "security_id", "exchange_segment",
         "strike", "expiry", "option_type",
+        "source", "currency", "instrument", "environment",
     )
 
-    def __init__(self, path):
+    def __init__(self, path, *, source="DHAN"):
+        if source not in {"DHAN", "OANDA"}:
+            raise ValueError("Observation source must be DHAN or OANDA")
+        self.source = source
         self.path = Path(path)
         self.status = "not_started"
         self.last_saved_at = None
@@ -33,7 +37,8 @@ class LiveObservationRecorder:
                 not quote_is_fresh(quote)
                 or not quote_has_timestamp(quote)
                 or not quote.get("symbol")
-                or quote.get("source") != "DHAN"
+                or quote.get("source") != self.source
+                or (self.source == "OANDA" and quote.get("symbol") != "XAUUSD")
             ):
                 continue
             snapshot = {
@@ -81,8 +86,12 @@ class LiveObservationRecorder:
             "observations_saved_this_run": self.saved_this_run,
             "last_saved_at": self.last_saved_at,
             "last_error": self.last_error,
-            "data_source": "DHAN",
+            "data_source": self.source,
             "purpose": "genuine live snapshots for chronological forward/replay evaluation",
             "paper_trades_created": False,
-            "price_basis": "observed depth filtered by recent exchange trade time; not depth update time",
+            "price_basis": (
+                "observed depth filtered by recent exchange trade time; not depth update time"
+                if self.source == "DHAN"
+                else "OANDA bid/ask and provider quote time; practice/live environment retained"
+            ),
         }

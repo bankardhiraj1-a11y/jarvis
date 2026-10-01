@@ -31,3 +31,22 @@ def test_missing_market_data_does_not_create_an_observation_database(tmp_path):
     assert recorder.record([{}, None]) == 0
     assert not recorder.path.exists()
     assert recorder.get_status()["status"] == "waiting_for_fresh_data"
+
+
+def test_xauusd_quotes_keep_oanda_environment_without_becoming_trades(tmp_path):
+    recorder = LiveObservationRecorder(tmp_path / "xauusd.sqlite", source="OANDA")
+    quote = {
+        "symbol": "XAUUSD", "source": "OANDA", "environment": "practice",
+        "currency": "USD", "close": 2500, "bid": 2499, "ask": 2501,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp_kind": "provider_quote", "account_id": "never persist",
+    }
+    assert recorder.record([quote, {**quote, "source": "DHAN"}]) == 1
+    with sqlite3.connect(recorder.path) as db:
+        snapshot = json.loads(db.execute("SELECT snapshot_json FROM observations").fetchone()[0])
+        assert snapshot["environment"] == "practice"
+        assert snapshot["source"] == "OANDA"
+        assert snapshot["currency"] == "USD"
+        assert "account_id" not in snapshot
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='trades'").fetchone() is None
+    assert recorder.get_status()["paper_trades_created"] is False

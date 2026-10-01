@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 load_dotenv()  # Provider credentials are read only from environment variables.
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# OANDA URLs contain private account identifiers. Do not log HTTP request paths.
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 from config import get_settings
@@ -70,6 +73,9 @@ dhan_client = DhanLiveClient()
 onda_client = OndaClient()
 evidence_dir = Path(__file__).resolve().parents[1] / "evidence"
 live_observation_recorder = LiveObservationRecorder(evidence_dir / "live_observations.sqlite")
+xau_observation_recorder = LiveObservationRecorder(
+    evidence_dir / "xauusd_observations.sqlite", source="OANDA"
+)
 
 # WebSocket subscriptions for live market feed
 # Build instrument list for subscription
@@ -197,7 +203,7 @@ _AGENT_RUNTIME_STATUS = {
         "reason": "Legacy SENSEX multi-leg spread/condor has no supported multi-leg paper execution",
     },
     "OPTIONS": {"status": "WAITING_FOR_DATA", "reason": "Waiting for fresh Dhan quotes and option-chain data"},
-    "XAUUSD": {"status": "EXCLUDED", "reason": "Excluded from this Dhan data and paper-trading request"},
+    "XAUUSD": {"status": "WAITING_FOR_DATA", "reason": "OANDA pricing collection only; paper entries require validated backtests"},
     "SENSEX_OPTIONS_SCALPING": {
         "status": "WAITING_FOR_DATA",
         "reason": "Waiting for fresh SENSEX index and option-chain data",
@@ -224,6 +230,8 @@ def _safe_provider_status(status):
         "stale",
         "symbol",
         "source",
+        "environment",
+        "configured",
     }
     safe = {
         key: status[key]
@@ -522,8 +530,8 @@ async def lifespan(app: FastAPI):
                 dhan_refresh_ok = await asyncio.to_thread(
                     dhan_client.refresh_quotes, _instruments_to_subscribe
                 )
-                # XAUUSD is explicitly excluded; do not poll OANDA or create XAU entries.
-                xau_quote = None
+                # Pricing collection only: XAU is not in the paper-entry routing.
+                xau_quote = await asyncio.to_thread(onda_client.get_live_data, "XAUUSD", "XAUUSD")
 
                 indian_quotes = {}
                 recorded_quotes = []
@@ -544,6 +552,18 @@ async def lifespan(app: FastAPI):
                     xau_quote["symbol"] = "XAUUSD"
                 else:
                     xau_quote = None
+                xau_fresh = quote_is_fresh(xau_quote) and quote_has_timestamp(xau_quote)
+                _AGENT_RUNTIME_STATUS["XAUUSD"] = {
+                    "status": "DATA_ONLY" if xau_fresh else "WAITING_FOR_DATA",
+                    "reason": (
+                        "Fresh OANDA pricing collected; no validated XAUUSD backtest or paper entries"
+                        if xau_fresh else "OANDA pricing is unavailable or stale; no prices or fills invented"
+                    ),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await asyncio.to_thread(
+                    xau_observation_recorder.record, [xau_quote] if xau_fresh else []
+                )
 
                 for agent_name, symbols in _AGENT_SYMBOLS.items():
                     agent = agents_map[agent_name]
@@ -1239,7 +1259,13 @@ async def run_agent_backtest(agent: str, days: int = 30, db: Session = Depends(g
     if agent not in agents_map:
         return {"error": f"Agent {agent} not found"}
     if agent == "XAUUSD":
-        return {"agent": agent, "status": "excluded", "reason": "XAUUSD excluded by request"}
+        return {
+            "agent": agent, "status": "unavailable_until_verified_history",
+            "reason": "OANDA live pricing is enabled; historical XAUUSD strategy validation is not completed",
+            "execution_validated": False, "strategy_changed": False,
+            "total_trades": None, "win_rate": None, "total_pnl": None,
+            "counted_toward_live_target": False,
+        }
     report_path = evidence_dir / "latest_backtests.json"
     if report_path.exists():
         try:
@@ -1278,7 +1304,7 @@ async def run_agent_backtest(agent: str, days: int = 30, db: Session = Depends(g
 async def get_market_snapshot():
     snapshot = dhan_client.get_market_snapshot()
     prices = snapshot.setdefault("prices", {})
-    cached_xau = getattr(onda_client, "latest_prices", {}).get("XAUUSD")
+    cached_xau = onda_client.get_cached_quote("XAUUSD")
     if isinstance(cached_xau, dict) and quote_is_fresh(cached_xau):
         prices["XAUUSD"] = dict(cached_xau)
     return snapshot
@@ -1294,6 +1320,7 @@ async def get_market_status():
         "paper_trading_requested": bool(settings.PAPER_TRADING_ENABLED),
         "entry_gate": "BACKTEST_REQUIRED",
         "live_observations": live_observation_recorder.get_status(),
+        "xauusd_observations": xau_observation_recorder.get_status(),
         "win_rate_target": 90,
         "win_rate_target_aspirational": True,
         "win_rate_guaranteed": False,

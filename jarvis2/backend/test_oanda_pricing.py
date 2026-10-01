@@ -52,11 +52,45 @@ class OandaPricingTests(unittest.TestCase):
         self.assertNotIn("sensitive-body", str(quote))
         self.assertFalse(client.get_status()["connected"])
 
-    def test_missing_account_never_calls_provider(self):
+    def test_missing_token_never_calls_provider(self):
         client = self.client()
+        client.access_token = ""
         client.account_id = ""
         self.assertIsNone(client.get_live_data()["close"])
         client._session.get.assert_not_called()
+
+    def test_legacy_token_discovers_single_account_privately(self):
+        with patch.dict("os.environ", {
+            "OANDA_ACCESS_TOKEN": "", "ONDA_ACCESS_TOKEN": "legacy-fixture-token",
+            "OANDA_ACCOUNT_ID": "", "OANDA_ENVIRONMENT": "practice",
+        }):
+            client = OandaPricingClient()
+        client._session = Mock()
+        client._session.get.side_effect = [
+            Mock(status_code=200, json=lambda: {"accounts": [{"id": "private-fixture-account"}]}),
+            Mock(status_code=200, json=lambda: self.response()),
+        ]
+        quote = client.get_live_data()
+        self.assertEqual(quote["source"], "OANDA")
+        self.assertEqual(quote["environment"], "practice")
+        self.assertEqual(client._session.get.call_count, 2)
+        self.assertNotIn("private-fixture-account", str(quote))
+        self.assertNotIn("private-fixture-account", str(client.get_status()))
+        client.get_cached_quote()
+        client.get_status()
+        self.assertEqual(client._session.get.call_count, 2)
+
+    def test_multiple_accounts_are_not_selected_arbitrarily(self):
+        client = self.client()
+        client.account_id = ""
+        client._session.get.return_value = Mock(
+            status_code=200,
+            json=lambda: {"accounts": [{"id": "first-fixture"}, {"id": "second-fixture"}]},
+        )
+        self.assertEqual(client.get_live_data()["status"], "account_selection_required")
+        self.assertEqual(client._session.get.call_count, 1)
+        self.assertEqual(client.get_live_data()["status"], "account_selection_required")
+        self.assertEqual(client._session.get.call_count, 1)
 
 
 if __name__ == "__main__":

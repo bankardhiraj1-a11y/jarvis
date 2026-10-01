@@ -18,7 +18,7 @@ MIN_VERIFIED_TRADES = 100
 TARGET_WIN_RATE = 90.0
 LIVE_DATA_SOURCES = frozenset({"DHAN", "OANDA"})
 DISABLED_AGENTS = {
-    "XAUUSD": "Excluded from the current Dhan-only evaluation and trading request.",
+    "XAUUSD": "Pricing collection only; XAUUSD historical execution validation is pending.",
     "SENSEX": (
         "Legacy SENSEX spread/condor agent is disabled; it is not scored as a "
         "single-leg paper strategy."

@@ -24,11 +24,48 @@ class OandaPricingClient:
         self.last_error = None
         self.is_connected = False
         self._cooldown_until = 0
+        self._account_lookup_after = 0
         self._session = requests.Session()
 
     @property
     def configured(self):
         return bool(self.access_token and re.fullmatch(r"[A-Za-z0-9-]+", self.account_id) and self.base_url)
+
+    def _discover_account(self):
+        """Resolve a single authorized account privately, only from a polling call."""
+        if self.account_id or not self.access_token or not self.base_url:
+            return
+        now = time.monotonic()
+        if now < self._account_lookup_after:
+            return
+        self._account_lookup_after = now + 60
+        try:
+            response = self._session.get(
+                f"{self.base_url}/accounts",
+                headers={"Authorization": f"Bearer {self.access_token}", "Accept": "application/json"},
+                timeout=8,
+            )
+            if response.status_code != 200:
+                self.last_error = f"account_lookup_http_{response.status_code}"
+                return
+            body = response.json()
+            accounts = body.get("accounts", []) if isinstance(body, dict) else []
+            if not isinstance(accounts, list):
+                self.last_error = "invalid_account_response"
+                return
+            ids = [
+                account["id"] for account in accounts
+                if isinstance(account, dict)
+                and isinstance(account.get("id"), str)
+                and re.fullmatch(r"[A-Za-z0-9-]+", account["id"])
+            ]
+            if len(ids) != 1:
+                self.last_error = "account_selection_required" if len(ids) > 1 else "account_unavailable"
+                return
+            self.account_id = ids[0]
+            self.last_error = None
+        except (requests.RequestException, ValueError, TypeError):
+            self.last_error = "account_lookup_failed"
 
     @staticmethod
     def _timestamp(value):
@@ -50,8 +87,9 @@ class OandaPricingClient:
     def get_live_data(self, symbol="XAUUSD", quote_type=None):
         if symbol != "XAUUSD":
             return self._unavailable(symbol, "unsupported_instrument")
+        self._discover_account()
         if not self.configured:
-            return self._unavailable(symbol, "credentials_or_environment_missing")
+            return self._unavailable(symbol, self.last_error or "credentials_or_environment_missing")
         if time.monotonic() < self._cooldown_until:
             return self._unavailable(symbol, "rate_limited")
         try:
@@ -87,6 +125,9 @@ class OandaPricingClient:
                 "exchange": "OANDA", "currency": "USD", "close": (bid + ask) / 2,
                 "bid": bid, "ask": ask, "timestamp": stamp.isoformat(),
                 "provider_timestamp": stamp.isoformat(), "age_seconds": age,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "timestamp_kind": "provider_quote",
+                "environment": self.environment,
                 "stale": False, "tradeable": True, "status": "live",
                 "volume": 0,
             }
@@ -94,7 +135,7 @@ class OandaPricingClient:
             self.is_connected = True
             self.last_error = None
             return dict(quote)
-        except (requests.RequestException, ValueError, TypeError, KeyError, StopIteration):
+        except (requests.RequestException, ValueError, TypeError, KeyError, StopIteration, AttributeError, OverflowError):
             # Never return request objects, headers, account IDs, or provider bodies.
             return self._unavailable(symbol, "pricing_request_failed")
 
