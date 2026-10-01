@@ -4,6 +4,23 @@ from typing import Dict, List
 from copy import deepcopy
 import pytz
 
+
+def _timestamp_in_ist(value, ist):
+    """Normalize event timestamps so historical replay does not use wall time."""
+    if value is None:
+        return datetime.now(ist)
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Invalid market-data timestamp") from exc
+    if not isinstance(value, datetime):
+        raise ValueError("Invalid market-data timestamp")
+    if value.tzinfo is None:
+        return ist.localize(value)
+    return value.astimezone(ist)
+
+
 class OptionsAgent(BaseAgent):
     """
     Nifty 50 & Bank Nifty Options Trading Agent
@@ -63,6 +80,7 @@ class OptionsAgent(BaseAgent):
         self.completed_candles_15m = []
         self.current_candle_15m = {"open": None, "high": None, "low": None, "close": None, "volume": 0}
         self.current_candle_start_15m = None
+        self.current_candle_last_timestamp_15m = None
 
         # Strategy state
         self.tier1_positions = []  # Momentum trades
@@ -84,6 +102,7 @@ class OptionsAgent(BaseAgent):
             "completed_candles_15m",
             "current_candle_15m",
             "current_candle_start_15m",
+            "current_candle_last_timestamp_15m",
             "tier1_positions",
             "tier2_positions",
             "tier3_positions",
@@ -172,39 +191,54 @@ class OptionsAgent(BaseAgent):
 
         self._with_symbol_state(symbol, remove_position)
 
-    def process_15m_candle(self, price: float, volume: int):
-        """Build 15-min candles for signal confirmation"""
+    def process_15m_candle(self, price: float, volume: int, timestamp=None):
+        """Build event-time 15-minute candles without filling gaps."""
         if price <= 0:
             return
 
-        now = datetime.now(self.ist)
+        now = _timestamp_in_ist(timestamp, self.ist)
+        minute_of_day = now.hour * 60 + now.minute
+        bucket_minute = (minute_of_day // 15) * 15
+        candle_start = now.replace(
+            hour=bucket_minute // 60,
+            minute=bucket_minute % 60,
+            second=0,
+            microsecond=0,
+        )
 
-        if (
-            self.current_candle_start_15m is None
-            or self.current_candle_start_15m.date() != now.date()
-        ):
-            self.current_candle_start_15m = now
+        if self.current_candle_start_15m is None:
+            self.current_candle_start_15m = candle_start
+            self.current_candle_last_timestamp_15m = now
             self.current_candle_15m = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
             return
 
-        elapsed = (now - self.current_candle_start_15m).total_seconds()
+        if now < self.current_candle_last_timestamp_15m:
+            return
 
-        self.current_candle_15m["close"] = price
-        self.current_candle_15m["high"] = max(self.current_candle_15m["high"], price)
-        self.current_candle_15m["low"] = min(self.current_candle_15m["low"], price)
-        self.current_candle_15m["volume"] += volume
-
-        if elapsed >= 900:  # 15 minutes
-            # Do not turn feed outages or an overnight gap into a synthetic
-            # 15-minute candle.
-            if elapsed <= 930:
+        if candle_start != self.current_candle_start_15m:
+            elapsed = (
+                (candle_start - self.current_candle_start_15m).total_seconds()
+                if candle_start.date() == self.current_candle_start_15m.date()
+                else None
+            )
+            # Finalize before handling this new bucket. A bucket with no ticks
+            # is omitted; gaps never produce synthetic candles.
+            if elapsed == 900:
                 self.completed_candles_15m.append(self.current_candle_15m.copy())
 
                 if len(self.completed_candles_15m) > 250:
                     self.completed_candles_15m.pop(0)
 
-            self.current_candle_start_15m = now
+            self.current_candle_start_15m = candle_start
+            self.current_candle_last_timestamp_15m = now
             self.current_candle_15m = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
+            return
+
+        self.current_candle_15m["close"] = price
+        self.current_candle_15m["high"] = max(self.current_candle_15m["high"], price)
+        self.current_candle_15m["low"] = min(self.current_candle_15m["low"], price)
+        self.current_candle_15m["volume"] += volume
+        self.current_candle_last_timestamp_15m = now
 
     def calculate_ema(self, candles: List[Dict], period: int) -> float:
         """Calculate EMA"""
@@ -284,10 +318,10 @@ class OptionsAgent(BaseAgent):
             except (TypeError, ValueError, OverflowError):
                 volume = 0
 
-            self.process_15m_candle(price, volume)
+            now = _timestamp_in_ist(live_data.get("timestamp"), self.ist)
+            self.process_15m_candle(price, volume, now)
 
             # Hard exit at 03:15 PM IST (intraday protection)
-            now = datetime.now(self.ist)
             if now.hour >= 15 and now.minute >= 15:
                 if self.tier1_positions or self.tier2_positions or self.tier3_positions:
                     print(f"[HARD EXIT] Liquidating all option positions at 03:15 PM IST", flush=True)

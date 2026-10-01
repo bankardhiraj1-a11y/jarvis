@@ -45,7 +45,7 @@ def quote_is_fresh(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Fail closed unless a quote has an explicit recent age or timestamp."""
+    """Recalculate age from provenance; a cached age must never freeze freshness."""
     if not isinstance(quote, dict) or quote.get("stale") is True:
         return False
     if quote.get("status") not in (None, "ok", "success", "live"):
@@ -53,23 +53,20 @@ def quote_is_fresh(
     if _positive_price(quote.get("close", quote.get("last_price"))) is None:
         return False
 
-    age = quote.get("age_seconds")
-    if age is not None:
+    # An explicit stale age still vetoes the quote; a small cached age cannot
+    # substitute for recalculating elapsed time from the provider timestamp.
+    if quote.get("age_seconds") is not None:
         try:
-            parsed_age = float(age)
+            cached_age = float(quote["age_seconds"])
         except (TypeError, ValueError, OverflowError):
             return False
-        return math.isfinite(parsed_age) and 0 <= parsed_age <= max_age_seconds
-
-    timestamp = quote.get("timestamp")
-    if not isinstance(timestamp, str) or not timestamp.strip():
+        if not math.isfinite(cached_age) or not 0 <= cached_age <= max_age_seconds:
+            return False
+    if quote.get("timestamp_basis") == "receipt":
         return False
-    try:
-        parsed_timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except ValueError:
+    parsed_timestamp = _parse_timestamp(quote.get("timestamp"))
+    if parsed_timestamp is None:
         return False
-    if parsed_timestamp.tzinfo is None:
-        parsed_timestamp = parsed_timestamp.replace(tzinfo=timezone.utc)
     current_time = now or datetime.now(timezone.utc)
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=timezone.utc)
@@ -106,11 +103,15 @@ def provider_side_price(quote: Any, transaction_side: str) -> Optional[float]:
         or not quote_has_timestamp(quote)
     ):
         return None
+    bid = _positive_price(quote.get("bid"))
+    ask = _positive_price(quote.get("ask"))
+    if bid is None or ask is None or bid > ask:
+        return None
     side = str(transaction_side or "").strip().upper()
     if side == "BUY":
-        return _positive_price(quote.get("ask"))
+        return ask
     if side == "SELL":
-        return _positive_price(quote.get("bid"))
+        return bid
     return None
 
 

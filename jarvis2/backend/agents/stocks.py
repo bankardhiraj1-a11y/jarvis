@@ -4,6 +4,23 @@ from typing import Dict, List
 from copy import deepcopy
 import pytz
 
+
+def _timestamp_in_ist(value, ist):
+    """Use an event timestamp for replay; only live callers omit it."""
+    if value is None:
+        return datetime.now(ist)
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Invalid market-data timestamp") from exc
+    if not isinstance(value, datetime):
+        raise ValueError("Invalid market-data timestamp")
+    if value.tzinfo is None:
+        return ist.localize(value)
+    return value.astimezone(ist)
+
+
 class StocksAgent(BaseAgent):
     """
     NSE Equity Swing & Momentum Trading Agent
@@ -37,6 +54,7 @@ class StocksAgent(BaseAgent):
         self.completed_candles = []
         self.current_candle = {"open": None, "high": None, "low": None, "close": None, "volume": 0}
         self.current_candle_start = None
+        self.current_candle_last_timestamp = None
 
         # Volume filter
         self.volume_sma_20 = []
@@ -58,6 +76,7 @@ class StocksAgent(BaseAgent):
             "completed_candles",
             "current_candle",
             "current_candle_start",
+            "current_candle_last_timestamp",
             "volume_sma_20",
             "atr_14",
             "open_positions",
@@ -122,39 +141,44 @@ class StocksAgent(BaseAgent):
         atr = sum(tr_values[-period:]) / period if tr_values else 0
         return atr
 
-    def process_daily_tick(self, price: float, volume: int):
-        """Build daily candles from tick data"""
+    def process_daily_tick(self, price: float, volume: int, timestamp=None):
+        """Build daily candles from chronologically timestamped ticks."""
         if price <= 0:
             return
 
-        now = datetime.now(self.ist)
+        now = _timestamp_in_ist(timestamp, self.ist)
 
         if self.current_candle_start is None:
             self.current_candle_start = now
+            self.current_candle_last_timestamp = now
             self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
             return
 
-        # Check if day changed (daily candle completion)
-        elapsed_days = (now - self.current_candle_start).days
+        if now < self.current_candle_last_timestamp:
+            return
 
-        self.current_candle["close"] = price
-        self.current_candle["high"] = max(self.current_candle["high"], price)
-        self.current_candle["low"] = min(self.current_candle["low"], price)
-        self.current_candle["volume"] += volume
-
-        if elapsed_days >= 1:  # Day completed
+        # Finalize the prior observed date before using this tick. Missing dates
+        # are not filled with synthetic candles.
+        if now.date() != self.current_candle_start.date():
             self.completed_candles.append(self.current_candle.copy())
             self.volume_sma_20.append(self.current_candle["volume"])
 
             if len(self.volume_sma_20) > 20:
                 self.volume_sma_20.pop(0)
 
-            if len(self.completed_candles) > 50:  # Keep 50 days history
+            if len(self.completed_candles) > 250:
                 self.completed_candles.pop(0)
 
-            # Reset for new day
             self.current_candle_start = now
+            self.current_candle_last_timestamp = now
             self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
+            return
+
+        self.current_candle["close"] = price
+        self.current_candle["high"] = max(self.current_candle["high"], price)
+        self.current_candle["low"] = min(self.current_candle["low"], price)
+        self.current_candle["volume"] += volume
+        self.current_candle_last_timestamp = now
 
     def calculate_ema(self, candles: List[Dict], period: int) -> float:
         """Calculate EMA for regime filter"""
@@ -170,12 +194,12 @@ class StocksAgent(BaseAgent):
 
         return ema
 
-    def can_trade_now(self) -> bool:
+    def can_trade_now(self, now=None) -> bool:
         """Check position limits and cooldown"""
         if len(self.open_positions) >= self.max_positions:
             return False
 
-        now = datetime.now(self.ist)
+        now = _timestamp_in_ist(now, self.ist)
 
         # Reset daily trades counter at start of day
         if self.trades_today and self.trades_today[0]['date'].date() != now.date():
@@ -210,11 +234,12 @@ class StocksAgent(BaseAgent):
         try:
             price = live_data.get('close', 0)
             volume = live_data.get('volume', 0)
+            event_time = _timestamp_in_ist(live_data.get("timestamp"), self.ist)
 
             if price <= 0 or volume <= 0:
                 return TrendSignal.HOLD
 
-            self.process_daily_tick(price, volume)
+            self.process_daily_tick(price, volume, event_time)
 
             # EMA(200) is part of the regime filter; do not trade before all
             # required authentic history has actually been collected.
@@ -229,7 +254,7 @@ class StocksAgent(BaseAgent):
                 return TrendSignal.HOLD
 
             # Can we trade?
-            if not self.can_trade_now():
+            if not self.can_trade_now(event_time):
                 return TrendSignal.HOLD
 
             # Get last candle and 20-day high
@@ -260,7 +285,7 @@ class StocksAgent(BaseAgent):
 
                 self.last_stop_loss_price = sl_price
                 self.last_take_profit_price = tp_price
-                self.last_trade_time = datetime.now(self.ist)
+                self.last_trade_time = event_time
                 self.trades_today.append({'date': self.last_trade_time, 'entry': price})
 
                 print(f"[VCP BREAKOUT] BUY {self.base_quantity} shares @ {price:.2f} | TP: {tp_price:.2f} | SL: {sl_price:.2f} | Vol: {volume:.0f} > {vol_sma_20:.0f}", flush=True)

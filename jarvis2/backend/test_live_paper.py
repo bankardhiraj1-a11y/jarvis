@@ -65,7 +65,6 @@ def test_bearish_signal_buys_the_real_put_quote_in_paper_mode():
         option_type="PE",
         strike=49500,
         expiry="2026-10-08",
-        timestamp="2026-10-08T10:00:00+00:00",
     )
     trade = build_long_option_paper_entry("SELL", put, 1000, 25, 12)
     assert trade["trade_type"] == "BUY"
@@ -76,6 +75,16 @@ def test_bearish_signal_buys_the_real_put_quote_in_paper_mode():
     assert trade["take_profit"] == 113.0
     assert trade["data_source"] == "DHAN"
     assert build_long_option_paper_entry("BUY", put, 1000, 25, 12) is None
+
+
+def test_cached_small_age_does_not_keep_an_old_quote_fresh():
+    old = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    assert not quote_is_fresh(_quote(timestamp=old, age_seconds=0.0))
+    assert not quote_is_fresh(_quote(timestamp_basis="receipt"))
+
+
+def test_provider_price_rejects_crossed_equity_depth():
+    assert provider_side_price(_quote(bid=102.0, ask=101.0), "BUY") is None
 
 
 def test_option_contract_round_trip_fits_existing_column():

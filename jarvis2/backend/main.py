@@ -33,6 +33,7 @@ from learning.performance_monitor import PerformanceMonitor
 from orchestrator.boss_agent import BossAgent
 from orchestrator.agent_team import AgentTeam
 from backtest.backtest_engine import BacktestEngine
+from backtest.live_capture import LiveObservationRecorder
 from data.dhan_live_client import DhanLiveClient
 from data.onda_client import OndaClient
 from scheduler.autonomous_optimizer import AutonomousOptimizer
@@ -67,6 +68,8 @@ performance_monitor = PerformanceMonitor(target_win_rate=0.90)
 backtest_engine = BacktestEngine()
 dhan_client = DhanLiveClient()
 onda_client = OndaClient()
+evidence_dir = Path(__file__).resolve().parents[1] / "evidence"
+live_observation_recorder = LiveObservationRecorder(evidence_dir / "live_observations.sqlite")
 
 # WebSocket subscriptions for live market feed
 # Build instrument list for subscription
@@ -194,7 +197,7 @@ _AGENT_RUNTIME_STATUS = {
         "reason": "Legacy SENSEX multi-leg spread/condor has no supported multi-leg paper execution",
     },
     "OPTIONS": {"status": "WAITING_FOR_DATA", "reason": "Waiting for fresh Dhan quotes and option-chain data"},
-    "XAUUSD": {"status": "WAITING_FOR_DATA", "reason": "Waiting for fresh OANDA quotes"},
+    "XAUUSD": {"status": "EXCLUDED", "reason": "Excluded from this Dhan data and paper-trading request"},
     "SENSEX_OPTIONS_SCALPING": {
         "status": "WAITING_FOR_DATA",
         "reason": "Waiting for fresh SENSEX index and option-chain data",
@@ -203,7 +206,6 @@ _AGENT_RUNTIME_STATUS = {
 _AGENT_SYMBOLS = {
     "STOCKS": ["RELIANCE", "TCS", "INFY", "HDFCBANK", "BAJAJ-AUTO"],
     "OPTIONS": ["NIFTY", "BANKNIFTY"],
-    "XAUUSD": ["XAUUSD"],
     "SENSEX_OPTIONS_SCALPING": ["SENSEX"],
 }
 
@@ -267,7 +269,8 @@ def _cached_trade_mark(trade):
             prices = option_entry_and_exit_prices(quote)
             return (prices[1], quote) if prices else (None, None)
         quote = _fresh_indian_quote(trade.symbol)
-        return (quote.get("close"), quote) if quote else (None, None)
+        exit_side = "SELL" if trade.trade_type.value == "BUY" else "BUY"
+        return (provider_side_price(quote, exit_side), quote) if quote else (None, None)
     if source == "OANDA":
         cached = getattr(onda_client, "latest_prices", {}).get(trade.symbol)
         if isinstance(cached, dict) and quote_is_fresh(cached):
@@ -277,6 +280,8 @@ def _cached_trade_mark(trade):
 
 
 def _monitor_open_trade(db, trade, agent_name):
+    if not _market_hours_open(agent_name):
+        return ("MARKET_CLOSED", "No paper fills outside the configured market session")
     if not trade.data_source or not trade.entry_data_timestamp:
         return (
             "UNVERIFIED_LEGACY_TRADE",
@@ -457,16 +462,52 @@ async def lifespan(app: FastAPI):
     async def option_chain_refresher():
         """Refresh real option chains sequentially; the client enforces Dhan limits."""
         while True:
-            for symbol, security_id in _OPTION_UNDERLYINGS.items():
+            requests = {(symbol, None) for symbol in _OPTION_UNDERLYINGS}
+            contracts = {}
+            # Persisted contracts must not lose their feed when nearest expiry changes.
+            with SessionLocal() as chain_db:
+                for trade in chain_db.query(Trade).filter(Trade.status == "OPEN").all():
+                    contract = parse_option_contract(trade.option_strike)
+                    if contract and trade.symbol in _OPTION_UNDERLYINGS:
+                        requests.add((trade.symbol, contract["expiry"]))
+                        contracts.setdefault(trade.symbol, []).append(contract)
+            for symbol, expiry in sorted(requests, key=lambda item: (item[0], item[1] or "")):
+                security_id = _OPTION_UNDERLYINGS[symbol]
                 try:
                     result = await asyncio.to_thread(
                         dhan_client.refresh_option_chain,
                         symbol,
                         security_id,
                         "IDX_I",
+                        expiry=expiry,
                     )
                     if result is False or result is None:
                         await asyncio.sleep(1)
+                        continue
+                    # All option HTTP calls belong here, never in dashboard GETs.
+                    for contract in contracts.get(symbol, []):
+                        if contract["expiry"] == result.get("expiry"):
+                            await asyncio.to_thread(
+                                dhan_client.refresh_option_quote, symbol, **contract
+                            )
+                    if expiry is None:
+                        option_snapshots = []
+                        for direction in ("BUY", "SELL"):
+                            identity = dhan_client.select_atm_option(symbol, direction)
+                            if not identity:
+                                continue
+                            option_quote = await asyncio.to_thread(
+                                dhan_client.refresh_option_quote,
+                                symbol,
+                                strike=identity["strike"],
+                                option_type=identity["option_type"],
+                                expiry=identity["expiry"],
+                            )
+                            if option_quote:
+                                option_snapshots.append({**option_quote, "source": "DHAN"})
+                        await asyncio.to_thread(
+                            live_observation_recorder.record, option_snapshots
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -481,22 +522,22 @@ async def lifespan(app: FastAPI):
                 dhan_refresh_ok = await asyncio.to_thread(
                     dhan_client.refresh_quotes, _instruments_to_subscribe
                 )
-                try:
-                    xau_quote = await asyncio.to_thread(
-                        onda_client.get_live_data, "XAUUSD", "XAUUSD"
-                    )
-                except Exception:
-                    xau_quote = None
+                # XAUUSD is explicitly excluded; do not poll OANDA or create XAU entries.
+                xau_quote = None
 
                 indian_quotes = {}
+                recorded_quotes = []
                 if dhan_refresh_ok:
                     for symbol in SYMBOL_TO_ID:
                         quote = _fresh_indian_quote(symbol)
                         if quote:
                             quote = dict(quote)
                             quote["symbol"] = symbol
+                            quote["source"] = "DHAN"
+                            recorded_quotes.append(dict(quote))
                             quote["volume"] = _volume_delta(symbol, quote)
                             indian_quotes[symbol] = quote
+                await asyncio.to_thread(live_observation_recorder.record, recorded_quotes)
 
                 if isinstance(xau_quote, dict):
                     xau_quote = dict(xau_quote)
@@ -546,6 +587,16 @@ async def lifespan(app: FastAPI):
                             symbol_statuses.append(("MARKET_CLOSED", "Outside the configured market session"))
                             continue
 
+                        # Fail closed: no strategy currently has an authentic historical
+                        # execution backtest. PAPER_TRADING_ENABLED is not an approval.
+                        # Do not analyze here: signaling mutates strategy counters.
+                        # Historical bootstrap/replay must be validated separately.
+                        symbol_statuses.append((
+                            "BACKTEST_REQUIRED",
+                            "Paper entries blocked until genuine historical execution backtests are verified",
+                        ))
+                        continue
+
                         try:
                             signal = agent.analyze(live_data)
                         except Exception:
@@ -576,7 +627,14 @@ async def lifespan(app: FastAPI):
 
                         if agent_name in {"OPTIONS", "SENSEX_OPTIONS_SCALPING"}:
                             try:
-                                option_quote = dhan_client.select_atm_option(symbol, signal.value)
+                                identity = dhan_client.select_atm_option(symbol, signal.value)
+                                option_quote = (
+                                    dhan_client.get_option_quote(
+                                        symbol, strike=identity["strike"],
+                                        option_type=identity["option_type"],
+                                        expiry=identity["expiry"],
+                                    ) if identity else None
+                                )
                             except Exception:
                                 option_quote = None
                             if not _option_quote_is_usable(option_quote):
@@ -645,11 +703,7 @@ async def lifespan(app: FastAPI):
                             ))
                             continue
 
-                        entry_price = (
-                            provider_side_price(live_data, signal.value)
-                            if agent_name == "XAUUSD"
-                            else live_data.get("close")
-                        )
+                        entry_price = provider_side_price(live_data, signal.value)
                         if not isinstance(entry_price, (int, float)) or entry_price <= 0:
                             symbol_statuses.append(("WAITING_FOR_DATA", "Provider price is invalid"))
                             continue
@@ -749,7 +803,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         autonomous_optimizer = None
         logger.warning("Continuous verified-performance monitor could not start")
-    print("Live-provider paper agents started; live order execution is disabled.", flush=True)
+    print("Read-only provider collection started; new paper entries require verified backtests. Live orders disabled.", flush=True)
 
     yield
 
@@ -824,6 +878,7 @@ async def get_portfolio(db: Session = Depends(get_db)):
     positions = {}
     realized_pnl_by_currency = {"INR": 0.0, "USD": 0.0}
     unrealized_pnl_by_currency = {"INR": 0.0, "USD": 0.0}
+    unpriced_positions = 0
     for currency in realized_pnl_by_currency:
         currency_trades = [
             trade
@@ -843,6 +898,8 @@ async def get_portfolio(db: Session = Depends(get_db)):
             else:
                 pnl = (trade.entry_price - current_price) * trade.quantity
             unrealized_pnl_by_currency[currency] += pnl
+        else:
+            unpriced_positions += 1
         positions[str(trade.id)] = {
             "symbol": trade.symbol,
             "agent": trade.agent.value,
@@ -850,7 +907,7 @@ async def get_portfolio(db: Session = Depends(get_db)):
             "quantity": trade.quantity,
             "entry_price": trade.entry_price,
             "current_price": current_price,
-            "pnl": round(pnl, 2),
+            "pnl": round(pnl, 2) if pnl is not None else None,
             "data_source": trade.data_source,
         }
     realized_pnl = realized_pnl_by_currency["INR"]
@@ -887,6 +944,9 @@ async def get_portfolio(db: Session = Depends(get_db)):
         "consolidation_note": "INR and USD P&L are reported separately; no currency conversion is assumed.",
         "positions": positions,
         "active_trades": len(open_trades),
+        "unpriced_positions": unpriced_positions,
+        "valuation_complete": unpriced_positions == 0,
+        "valuation_note": "Unpriced positions remain open; totals include only available verified marks.",
         "agent_performance": agent_performance,
         "mode": "PAPER",
         "live_orders_enabled": False,
@@ -1178,6 +1238,26 @@ async def get_team_health():
 async def run_agent_backtest(agent: str, days: int = 30, db: Session = Depends(get_db)):
     if agent not in agents_map:
         return {"error": f"Agent {agent} not found"}
+    if agent == "XAUUSD":
+        return {"agent": agent, "status": "excluded", "reason": "XAUUSD excluded by request"}
+    report_path = evidence_dir / "latest_backtests.json"
+    if report_path.exists():
+        try:
+            report = json.loads(report_path.read_text())
+            evaluation = report.get("agents", {}).get(agent)
+            if isinstance(evaluation, dict):
+                return {
+                    **evaluation,
+                    "agent": agent,
+                    "generated_at": report.get("generated_at"),
+                    "data_source": report.get("data_source"),
+                    "requested_period_days": days,
+                    "period_note": "Returns the latest completed evaluation; this request does not change its period.",
+                    "counted_toward_live_target": False,
+                    "strategy_changed": False,
+                }
+        except (OSError, ValueError, TypeError):
+            raise HTTPException(status_code=503, detail="Backtest evidence report is unavailable")
     return {
         "agent": agent,
         "requested_period_days": days,
@@ -1210,7 +1290,10 @@ async def get_market_status():
     return {
         "mode": "PAPER",
         "live_orders_enabled": False,
-        "paper_trading_enabled": bool(settings.PAPER_TRADING_ENABLED),
+        "paper_trading_enabled": False,
+        "paper_trading_requested": bool(settings.PAPER_TRADING_ENABLED),
+        "entry_gate": "BACKTEST_REQUIRED",
+        "live_observations": live_observation_recorder.get_status(),
         "win_rate_target": 90,
         "win_rate_target_aspirational": True,
         "win_rate_guaranteed": False,

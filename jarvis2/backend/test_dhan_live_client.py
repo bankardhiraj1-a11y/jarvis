@@ -1,10 +1,14 @@
 import json
 import math
+import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import StringIO
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from data.dhan_live_client import DhanLiveClient
 
@@ -34,9 +38,20 @@ class FakeSession:
         self.closed = True
 
 
-def quote_record(last_price=101.25):
+class ProfileFakeSession(FakeSession):
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if not self.responses:
+            raise AssertionError("Unexpected HTTP request")
+        return self.responses.pop(0)
+
+
+def quote_record(last_price=101.25, bid=100.0, ask=102.0):
     return {
         "last_price": last_price,
+        "last_trade_time": datetime.now(ZoneInfo("Asia/Kolkata")).strftime(
+            "%d/%m/%Y %H:%M:%S"
+        ),
         "ohlc": {
             "open": 99.5,
             "high": 103.0,
@@ -44,6 +59,21 @@ def quote_record(last_price=101.25):
             "close": 100.0,
         },
         "volume": 1234,
+        "depth": {
+            "buy": [{"price": bid, "quantity": 25, "orders": 1}],
+            "sell": [{"price": ask, "quantity": 40, "orders": 1}],
+        },
+    }
+
+
+def option_quote_response(security_id, last_price, bid, ask):
+    return {
+        "status": "success",
+        "data": {
+            "NSE_FNO": {
+                str(security_id): quote_record(last_price, bid, ask),
+            },
+        },
     }
 
 
@@ -98,6 +128,197 @@ class DhanLiveClientTests(unittest.TestCase):
             0, elapsed[0] + seconds
         )
         return client, session
+
+    def test_token_only_profile_resolves_client_id_for_read_only_quote(self):
+        quote = {
+            "status": "success",
+            "data": {"NSE_EQ": {"1333": quote_record()}},
+        }
+        session = ProfileFakeSession(
+            [
+                FakeResponse({"dhanClientId": "private-account-id"}),
+                FakeResponse(quote),
+            ]
+        )
+        with patch.dict(
+            "os.environ",
+            {"DHAN_ACCESS_TOKEN": "test-access-token"},
+            clear=False,
+        ):
+            os.environ.pop("DHAN_CLIENT_ID", None)
+            client = DhanLiveClient(session=session)
+        elapsed = [0.0]
+        client._monotonic = lambda: elapsed[0]
+        client._sleep = lambda seconds: elapsed.__setitem__(
+            0, elapsed[0] + seconds
+        )
+
+        self.assertTrue(
+            client.refresh_quotes(
+                [{"ExchangeSegment": "NSE_EQ", "SecurityId": 1333, "Symbol": "HDFCBANK"}]
+            )
+        )
+        self.assertEqual(
+            [call[0] for call in session.calls],
+            [
+                "https://api.dhan.co/v2/profile",
+                "https://api.dhan.co/v2/marketfeed/quote",
+            ],
+        )
+        profile_headers = session.calls[0][1]["headers"]
+        self.assertEqual(profile_headers, {
+            "access-token": "test-access-token",
+            "Accept": "application/json",
+        })
+        quote_headers = session.calls[1][1]["headers"]
+        self.assertEqual(quote_headers["client-id"], "private-account-id")
+        self.assertEqual(quote_headers["access-token"], "test-access-token")
+        self.assertNotIn("private-account-id", client.get_market_snapshot().__repr__())
+
+    def test_token_only_profile_failure_does_not_try_market_feed(self):
+        session = ProfileFakeSession(
+            [FakeResponse({"message": "unauthorized"}, 401)]
+        )
+        with patch.dict(
+            "os.environ",
+            {"DHAN_ACCESS_TOKEN": "test-access-token"},
+            clear=False,
+        ):
+            os.environ.pop("DHAN_CLIENT_ID", None)
+            client = DhanLiveClient(session=session)
+        self.assertFalse(
+            client.refresh_quotes(
+                [{"ExchangeSegment": "NSE_EQ", "SecurityId": 1333, "Symbol": "HDFCBANK"}]
+            )
+        )
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(session.calls[0][0], "https://api.dhan.co/v2/profile")
+        self.assertNotIn("private-account-id", str(client.last_error))
+
+    def test_profile_identity_overrides_mismatched_configured_client_id(self):
+        configured_id = "configured-fixture-id"
+        profile_id = "profile-fixture-id"
+        response = {
+            "status": "success",
+            "data": {"NSE_EQ": {"1333": quote_record()}},
+        }
+        session = ProfileFakeSession(
+            [
+                FakeResponse({"dhanClientId": profile_id}),
+                FakeResponse(response),
+            ]
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "DHAN_CLIENT_ID": configured_id,
+                "DHAN_ACCESS_TOKEN": "test-access-token",
+            },
+            clear=False,
+        ):
+            client = DhanLiveClient(session=session)
+
+        self.assertTrue(
+            client.refresh_quotes(
+                [{"ExchangeSegment": "NSE_EQ", "SecurityId": 1333, "Symbol": "HDFCBANK"}]
+            )
+        )
+        self.assertEqual(
+            [call[0] for call in session.calls],
+            [
+                "https://api.dhan.co/v2/profile",
+                "https://api.dhan.co/v2/marketfeed/quote",
+            ],
+        )
+        quote_headers = session.calls[1][1]["headers"]
+        self.assertEqual(quote_headers["client-id"], profile_id)
+        self.assertNotEqual(quote_headers["client-id"], configured_id)
+
+    def test_concurrent_collectors_wait_for_the_verified_profile_identity(self):
+        started, release = Event(), Event()
+        class DelayedProfileSession:
+            def get(self, url, **kwargs):
+                started.set()
+                assert release.wait(2)
+                return FakeResponse({"dhanClientId": "verified-fixture-id"})
+        with patch.dict("os.environ", {
+            "DHAN_CLIENT_ID": "wrong-fixture-id",
+            "DHAN_ACCESS_TOKEN": "fixture-token",
+        }):
+            client = DhanLiveClient(session=DelayedProfileSession())
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(lambda: client._has_credentials)
+            assert started.wait(2)
+            second = pool.submit(lambda: client._has_credentials)
+            assert not second.done()
+            release.set()
+            assert first.result(2)
+            assert second.result(2)
+        self.assertEqual(client._client_id, "verified-fixture-id")
+
+    def test_dashboard_cache_reads_do_not_resolve_profile_over_http(self):
+        session = ProfileFakeSession([])
+        with patch.dict("os.environ", {
+            "DHAN_CLIENT_ID": "",
+            "DHAN_ACCESS_TOKEN": "fixture-token",
+        }):
+            client = DhanLiveClient(session=session)
+        client.get_live_data(1333, "HDFCBANK", "NSE_EQ")
+        client.get_market_snapshot()
+        self.assertEqual(session.calls, [])
+
+    def test_configured_id_fallback_stops_after_market_feed_401(self):
+        configured_id = "configured-fixture-id"
+        quote = {
+            "status": "success",
+            "data": {"NSE_EQ": {"1333": quote_record()}},
+        }
+        instruments = [
+            {"ExchangeSegment": "NSE_EQ", "SecurityId": 1333, "Symbol": "HDFCBANK"}
+        ]
+
+        # If profile lookup is unavailable, a configured ID can still be
+        # verified against a successful read-only quote request.
+        valid_fallback_session = ProfileFakeSession(
+            [
+                FakeResponse({"message": "not found"}, 404),
+                FakeResponse(quote),
+            ]
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "DHAN_CLIENT_ID": configured_id,
+                "DHAN_ACCESS_TOKEN": "test-access-token",
+            },
+            clear=False,
+        ):
+            valid_fallback_client = DhanLiveClient(session=valid_fallback_session)
+        self.assertTrue(valid_fallback_client.refresh_quotes(instruments))
+        self.assertEqual(
+            valid_fallback_session.calls[1][1]["headers"]["client-id"],
+            configured_id,
+        )
+
+        rejected_session = ProfileFakeSession(
+            [
+                FakeResponse({"message": "not found"}, 404),
+                FakeResponse({"message": "unauthorized"}, 401),
+            ]
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "DHAN_CLIENT_ID": configured_id,
+                "DHAN_ACCESS_TOKEN": "test-access-token",
+            },
+            clear=False,
+        ):
+            rejected_client = DhanLiveClient(session=rejected_session)
+        self.assertFalse(rejected_client.refresh_quotes(instruments))
+        self.assertFalse(rejected_client.refresh_quotes(instruments))
+        self.assertEqual(len(rejected_session.calls), 2)
+        self.assertEqual(rejected_client._client_id, "")
 
     def test_batch_quote_payload_headers_and_normalization(self):
         response = {
@@ -210,7 +431,7 @@ class DhanLiveClientTests(unittest.TestCase):
             "status": "success",
             "data": {"NSE_EQ": {"1333": quote_record()}},
         }
-        client, _ = self.make_client(
+        client, session = self.make_client(
             [FakeResponse(response)],
             quote_max_age_seconds=5,
         )
@@ -252,6 +473,8 @@ class DhanLiveClientTests(unittest.TestCase):
             [
                 FakeResponse({"status": "success", "data": [expiry]}),
                 FakeResponse(option_chain_response()),
+                FakeResponse(option_quote_response(101, 102.0, 100.0, 104.0)),
+                FakeResponse(option_quote_response(102, 98.0, 96.0, 100.0)),
             ]
         )
 
@@ -293,13 +516,37 @@ class DhanLiveClientTests(unittest.TestCase):
         put = client.select_atm_option("BANKNIFTY", "SELL")
         self.assertEqual(call["option_type"], "CE")
         self.assertEqual(call["strike"], 44000.0)
+        self.assertEqual(call["expiry"], expiry)
+        self.assertEqual(call["security_id"], 101)
+        self.assertEqual(call["source"], "option_chain")
+        self.assertNotIn("bid", call)
+        self.assertNotIn("close", call)
         self.assertEqual(put["option_type"], "PE")
         self.assertEqual(put["strike"], 44000.0)
+        self.assertEqual(len(session.calls), 2)
+
+        call_quote = client.refresh_option_quote(
+            "BANKNIFTY",
+            strike=call["strike"],
+            option_type=call["option_type"],
+            expiry=call["expiry"],
+        )
+        put_quote = client.refresh_option_quote(
+            "BANKNIFTY",
+            strike=put["strike"],
+            option_type=put["option_type"],
+            expiry=put["expiry"],
+        )
+        self.assertEqual(call_quote["option_type"], "CE")
+        self.assertEqual(put_quote["option_type"], "PE")
+        self.assertEqual(call_quote["timestamp_basis"], "exchange")
+        self.assertNotEqual(call_quote["timestamp"], call_quote["observed_at"])
 
         matched = client.get_option_quote(
             "BANKNIFTY", 44000, "CALL", expiry=expiry
         )
         self.assertEqual(matched["security_id"], 101)
+        self.assertEqual(len(session.calls), 4)
         self.assertIsNone(
             client.get_option_quote(
                 "BANKNIFTY",
@@ -324,11 +571,14 @@ class DhanLiveClientTests(unittest.TestCase):
         self.assertIsNotNone(client.refresh_option_chain("BANKNIFTY", 25))
         self.assertGreaterEqual(elapsed[0], 3.0)
 
-    def test_unusable_option_prices_or_stale_chains_cannot_be_selected(self):
+    def test_chain_identity_selection_is_independent_of_chain_prices(self):
         response = option_chain_response()
         response["data"]["oc"]["44000.000000"]["ce"]["top_ask_price"] = 0
-        client, _ = self.make_client(
-            [FakeResponse(response)],
+        client, session = self.make_client(
+            [
+                FakeResponse(response),
+                FakeResponse(option_quote_response(101, 102.0, 100.0, 104.0)),
+            ],
             option_max_age_seconds=5,
         )
         self.assertIsNotNone(
@@ -338,18 +588,86 @@ class DhanLiveClientTests(unittest.TestCase):
                 expiry="2099-01-01",
             )
         )
-        # The invalid nearest call is rejected; the next fresh, valid strike is used.
+        # ATM selection returns a contract identity; chain prices need not be
+        # executable because the explicit quote refresh supplies the live mark.
         selected = client.select_atm_option("BANKNIFTY", "BUY")
-        self.assertEqual(selected["strike"], 44010.0)
+        self.assertEqual(selected["strike"], 44000.0)
+        self.assertEqual(selected["security_id"], 101)
+        self.assertEqual(len(session.calls), 1)
+        refreshed = client.refresh_option_quote(
+            "BANKNIFTY",
+            strike=selected["strike"],
+            option_type=selected["option_type"],
+            expiry=selected["expiry"],
+        )
+        self.assertEqual(refreshed["security_id"], 101)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(
+            client.get_option_quote("BANKNIFTY", 44000, "CE")["security_id"],
+            101,
+        )
+        self.assertEqual(len(session.calls), 2)
         self.assertIsNone(
-            client.get_option_quote("BANKNIFTY", 44000, "CE")
+            client.get_option_quote("BANKNIFTY", 44010, "CE")
         )
 
-        client._option_received_at["BANKNIFTY"] -= 6
+        client._option_received_at[("BANKNIFTY", "2099-01-01")] -= 6
         self.assertIsNone(client.select_atm_option("BANKNIFTY", "BUY"))
         self.assertIsNone(
             client.get_option_quote("BANKNIFTY", 44010, "CE")
         )
+
+    def test_option_quote_getter_never_requests_http_for_missing_or_stale_data(self):
+        expiry = (date.today() + timedelta(days=7)).isoformat()
+        client, session = self.make_client(
+            [
+                FakeResponse(option_chain_response()),
+                FakeResponse(option_quote_response(101, 102.0, 100.0, 104.0)),
+            ],
+            option_max_age_seconds=5,
+        )
+
+        # An absent chain/quote is simply absent; a GET-style accessor never
+        # attempts to populate it from Dhan.
+        self.assertIsNone(
+            client.get_option_quote("BANKNIFTY", 44000, "CE", expiry=expiry)
+        )
+        self.assertIsNone(client.select_atm_option("BANKNIFTY", "BUY"))
+        self.assertEqual(session.calls, [])
+
+        self.assertIsNotNone(
+            client.refresh_option_chain("BANKNIFTY", 25, expiry=expiry)
+        )
+        calls_after_chain = len(session.calls)
+        self.assertIsNone(
+            client.get_option_quote("BANKNIFTY", 45000, "CE", expiry=expiry)
+        )
+        identity = client.select_atm_option("BANKNIFTY", "BUY")
+        self.assertEqual(identity["security_id"], 101)
+        self.assertEqual(len(session.calls), calls_after_chain)
+
+        self.assertIsNotNone(
+            client.refresh_option_quote(
+                "BANKNIFTY",
+                strike=identity["strike"],
+                option_type=identity["option_type"],
+                expiry=identity["expiry"],
+            )
+        )
+        calls_after_explicit_refresh = len(session.calls)
+        cache_key = ("BANKNIFTY", expiry, "44000", "CE")
+        client._option_quote_received_at[cache_key] -= 6
+        self.assertIsNone(
+            client.get_option_quote("BANKNIFTY", 44000, "CE", expiry=expiry)
+        )
+        self.assertEqual(len(session.calls), calls_after_explicit_refresh)
+
+        client._option_received_at[("BANKNIFTY", expiry)] -= 6
+        self.assertIsNone(
+            client.get_option_quote("BANKNIFTY", 44000, "CE", expiry=expiry)
+        )
+        self.assertIsNone(client.select_atm_option("BANKNIFTY", "BUY"))
+        self.assertEqual(len(session.calls), calls_after_explicit_refresh)
 
     def test_failed_option_response_does_not_cache_a_chain(self):
         client, session = self.make_client(

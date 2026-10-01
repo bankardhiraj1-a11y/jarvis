@@ -10,14 +10,16 @@ import time
 from datetime import date, datetime, timezone
 from threading import Lock
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import requests
 
 
 BASE_URL = "https://api.dhan.co/v2"
 REQUEST_TIMEOUT_SECONDS = 10
-QUOTE_MIN_INTERVAL_SECONDS = 1.0
-OPTION_MIN_INTERVAL_SECONDS = 3.0
+# Allow for network jitter: exact documented boundaries caused intermittent 429s.
+QUOTE_MIN_INTERVAL_SECONDS = 1.25
+OPTION_MIN_INTERVAL_SECONDS = 3.25
 EXPIRY_CACHE_SECONDS = 60 * 60
 
 _SEGMENTS = {
@@ -69,20 +71,36 @@ class DhanLiveClient:
     ):
         # Keep credentials private and in memory only. They are never included
         # in logs, snapshots, error strings, or cached market-data records.
-        self._client_id = os.getenv("DHAN_CLIENT_ID", "").strip()
+        self._configured_client_id = os.getenv("DHAN_CLIENT_ID", "").strip()
+        self._client_id = self._configured_client_id
         self._access_token = os.getenv("DHAN_ACCESS_TOKEN", "").strip()
+        self._profile_attempted_at: Optional[float] = None
+        self._profile_identity_verified = False
+        self._configured_client_id_rejected = False
         self._session = session or requests.Session()
 
         self.quote_max_age_seconds = max(0.0, float(quote_max_age_seconds))
         self.option_max_age_seconds = max(0.0, float(option_max_age_seconds))
 
         self.latest_prices: Dict[str, Dict[str, Any]] = {}
-        self.option_chains: Dict[str, Dict[str, Any]] = {}
+        # Each expiry is a separate snapshot. In particular, refreshing the
+        # nearest expiry must not evict the chain for an open older-expiry trade.
+        self.option_chains: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._latest_option_expiry: Dict[str, str] = {}
+        self._option_contract_quotes: Dict[
+            Tuple[str, str, str, str], Dict[str, Any]
+        ] = {}
         self.subscribed = False
         self.last_error: Optional[str] = None
 
         self._quote_received_at: Dict[str, float] = {}
-        self._option_received_at: Dict[str, float] = {}
+        self._option_received_at: Dict[Tuple[str, str], float] = {}
+        self._option_quote_received_at: Dict[
+            Tuple[str, str, str, str], float
+        ] = {}
+        self._option_quote_attempted_at: Dict[
+            Tuple[str, str, str, str], float
+        ] = {}
         self._invalid_quotes = set()
         self._instrument_meta: Dict[str, Dict[str, str]] = {}
         self._subscribed_instruments: List[Dict[str, str]] = []
@@ -91,6 +109,7 @@ class DhanLiveClient:
         self._monotonic = time.monotonic
         self._sleep = time.sleep
         self._quote_lock = Lock()
+        self._credential_lock = Lock()
         self._option_lock = Lock()
         self._quote_rate_lock = Lock()
         self._option_rate_lock = Lock()
@@ -99,7 +118,75 @@ class DhanLiveClient:
 
     @property
     def _has_credentials(self) -> bool:
+        self._resolve_client_id()
         return bool(self._client_id and self._access_token)
+
+    @property
+    def _cached_has_credentials(self) -> bool:
+        """Cache reads must never trigger profile HTTP or credential resolution."""
+        return bool(self._client_id and self._access_token)
+
+    def _resolve_client_id(self) -> None:
+        # Quote and chain collectors start concurrently. Both must wait for the
+        # authenticated identity before either can send a configured fallback.
+        with self._credential_lock:
+            self._resolve_client_id_locked()
+
+    def _resolve_client_id_locked(self) -> None:
+        """Prefer the client identity authenticated by the access token.
+
+        A configured ID remains a compatibility fallback when the profile
+        endpoint is unavailable, but a token-verified profile ID is authoritative.
+        """
+        if not self._access_token or self._profile_identity_verified:
+            return
+        now = self._monotonic()
+        if (
+            self._profile_attempted_at is not None
+            and now - self._profile_attempted_at < 60
+        ):
+            return
+        self._profile_attempted_at = now
+        try:
+            response = self._session.get(
+                f"{BASE_URL}/profile",
+                headers={
+                    "access-token": self._access_token,
+                    "Accept": "application/json",
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            if getattr(response, "status_code", None) != 200:
+                return
+            body = response.json()
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
+            return
+        except Exception:
+            return
+        if not isinstance(body, dict):
+            return
+        client_id = body.get("dhanClientId")
+        if isinstance(client_id, str):
+            client_id = client_id.strip()
+        else:
+            client_id = ""
+        # Header values must be a simple single-line identifier. Keep it only
+        # in memory; never copy profile content or the ID into status/error data.
+        if (
+            client_id
+            and len(client_id) <= 64
+            and "\r" not in client_id
+            and "\n" not in client_id
+        ):
+            self._client_id = client_id
+            self._profile_identity_verified = True
+            return
+
+        # A configured ID is usable as a fallback only until the market API
+        # rejects it. Never keep retrying a known-bad ID if profile lookup is
+        # unavailable.
+        if not self._client_id and not self._configured_client_id_rejected:
+            self._client_id = self._configured_client_id
 
     def _set_error(self, message: Optional[str]) -> None:
         self.last_error = message
@@ -158,6 +245,15 @@ class DhanLiveClient:
 
         status_code = getattr(response, "status_code", None)
         if not isinstance(status_code, int) or not 200 <= status_code < 300:
+            if status_code == 401:
+                attempted_client_id = headers["client-id"]
+                with self._credential_lock:
+                    # A late failure from an old request cannot erase a newly
+                    # resolved identity used by another background collector.
+                    if self._client_id == attempted_client_id:
+                        self._client_id = ""
+                    if attempted_client_id == self._configured_client_id:
+                        self._configured_client_id_rejected = True
             self._set_error(
                 f"Dhan market-data request returned HTTP {status_code}"
                 if isinstance(status_code, int)
@@ -199,8 +295,31 @@ class DhanLiveClient:
         return canonical_segment, parsed_id
 
     @staticmethod
+    def _exchange_timestamp(value: Any) -> Optional[str]:
+        """Normalize Dhan's exchange trade time; never substitute receipt time."""
+        if not isinstance(value, str) or not value.strip():
+            return None
+        raw = value.strip()
+        parsed = None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            for fmt in ("%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    parsed = datetime.strptime(raw, fmt)
+                    break
+                except ValueError:
+                    continue
+        if parsed is None or parsed.year <= 1980:
+            return None
+        if parsed.tzinfo is None:
+            # Dhan documents last_trade_time as exchange-local time.
+            parsed = parsed.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+        return parsed.astimezone(timezone.utc).isoformat()
+
+    @staticmethod
     def _normalize_quote(
-        record: Dict[str, Any], *, symbol: str, segment: str, timestamp: str
+        record: Dict[str, Any], *, symbol: str, segment: str, received_at: str
     ) -> Optional[Dict[str, Any]]:
         last_price = _positive_number(record.get("last_price"))
         if last_price is None:
@@ -228,6 +347,31 @@ class DhanLiveClient:
         if record.get("volume") is not None and volume is None:
             return None
 
+        depth = record.get("depth")
+        if not isinstance(depth, dict):
+            depth = {}
+
+        def best_depth(side: str) -> Tuple[Optional[float], Optional[int]]:
+            levels = depth.get(side)
+            if not isinstance(levels, list):
+                return None, None
+            for level in levels:
+                if not isinstance(level, dict):
+                    continue
+                price = _positive_number(level.get("price"))
+                quantity = _non_negative_number(level.get("quantity"))
+                if price is not None and quantity is not None and quantity > 0:
+                    return price, int(quantity)
+            return None, None
+
+        bid, bid_quantity = best_depth("buy")
+        ask, ask_quantity = best_depth("sell")
+        if bid is not None and ask is not None and bid > ask:
+            bid, bid_quantity, ask, ask_quantity = None, None, None, None
+
+        exchange_timestamp = DhanLiveClient._exchange_timestamp(
+            record.get("last_trade_time")
+        )
         return {
             "symbol": symbol,
             "segment": segment,
@@ -235,8 +379,21 @@ class DhanLiveClient:
             "high": prices["high"],
             "low": prices["low"],
             "close": last_price,
+            "bid": bid,
+            "ask": ask,
+            "bid_quantity": bid_quantity,
+            "ask_quantity": ask_quantity,
             "volume": int(volume) if volume is not None else None,
-            "timestamp": timestamp,
+            # This is the exchange's last-trade timestamp, if supplied.
+            "timestamp": exchange_timestamp,
+            "timestamp_basis": "exchange" if exchange_timestamp else None,
+            "timestamp_kind": "exchange_trade" if exchange_timestamp else None,
+            # Receipt time is useful for diagnostics only, never execution
+            # provenance or a substitute for missing exchange trade time.
+            "received_at_timestamp": received_at,
+            # Keep local observation separate from the exchange's last-trade
+            # timestamp above; neither field describes when depth changed.
+            "observed_at": received_at,
         }
 
     def refresh_quotes(self, instruments: Iterable[Dict[str, Any]]) -> bool:
@@ -302,8 +459,8 @@ class DhanLiveClient:
             )
             return False
 
-        timestamp = datetime.now(timezone.utc).isoformat()
         received_at = self._monotonic()
+        received_timestamp = datetime.now(timezone.utc).isoformat()
         parsed: Dict[str, Dict[str, Any]] = {}
         missing = []
         for (segment, security_id), metadata in requested.items():
@@ -319,7 +476,7 @@ class DhanLiveClient:
                 record,
                 symbol=metadata["symbol"],
                 segment=segment,
-                timestamp=timestamp,
+                received_at=received_timestamp,
             )
             if quote is None:
                 missing.append(security_id)
@@ -378,7 +535,7 @@ class DhanLiveClient:
             invalid = key in self._invalid_quotes
 
         if (
-            not self._has_credentials
+            not self._cached_has_credentials
             or invalid
             or not isinstance(stored, dict)
             or received_at is None
@@ -396,14 +553,37 @@ class DhanLiveClient:
                 "stale": True,
             }
 
-        age = max(0.0, self._monotonic() - received_at)
+        receipt_age = self._monotonic() - received_at
         quote = dict(stored)
         quote["symbol"] = symbol or quote.get("symbol", "")
         quote["segment"] = _SEGMENTS.get(
             str(segment).upper(), quote.get("segment", str(segment))
         )
-        quote["age_seconds"] = round(age, 3)
-        quote["stale"] = age > self.quote_max_age_seconds
+        quote["receipt_age_seconds"] = round(max(0.0, receipt_age), 3)
+        exchange_timestamp = self._exchange_timestamp(quote.get("timestamp"))
+        exchange_age = None
+        if exchange_timestamp is not None:
+            parsed = datetime.fromisoformat(exchange_timestamp)
+            exchange_age = (
+                datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+            ).total_seconds()
+        # Both the HTTP observation and the provider's actual trade must be
+        # recent. Missing/sentinel/future exchange times are not executable.
+        fresh_exchange_time = (
+            exchange_age is not None
+            and 0 <= exchange_age <= self.quote_max_age_seconds
+        )
+        quote["age_seconds"] = round(
+            max(max(0.0, receipt_age), max(0.0, exchange_age or 0.0)), 3
+        )
+        quote["exchange_age_seconds"] = (
+            round(exchange_age, 3) if exchange_age is not None else None
+        )
+        quote["stale"] = (
+            receipt_age < 0
+            or receipt_age > self.quote_max_age_seconds
+            or not fresh_exchange_time
+        )
         if quote["stale"]:
             # Preserve the observation time and age for diagnostics, but do not
             # expose an old price as usable market data to a trading caller.
@@ -413,6 +593,10 @@ class DhanLiveClient:
                     "high": None,
                     "low": None,
                     "close": None,
+                    "bid": None,
+                    "ask": None,
+                    "bid_quantity": None,
+                    "ask_quantity": None,
                     "volume": None,
                 }
             )
@@ -561,6 +745,17 @@ class DhanLiveClient:
             and bid <= ask
         )
 
+    @staticmethod
+    def _option_identity(contract: Any) -> Optional[int]:
+        """Return the chain contract security ID when its identity is valid."""
+        if not isinstance(contract, dict):
+            return None
+        try:
+            security_id = int(contract.get("security_id", 0))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return security_id if security_id > 0 else None
+
     def refresh_option_chain(
         self,
         symbol: str,
@@ -580,6 +775,7 @@ class DhanLiveClient:
             self._set_error("Dhan credentials are not configured")
             return None
 
+        use_default_expiry = expiry is None
         selected_expiry = expiry
         if selected_expiry is None:
             expiries = self._get_expiry_list(normalized_symbol, parsed_id, segment)
@@ -647,26 +843,50 @@ class DhanLiveClient:
             return None
 
         received_at = self._monotonic()
+        observed_at = datetime.now(timezone.utc).isoformat()
         chain = {
             "symbol": normalized_symbol,
             "underlying_id": parsed_id,
             "underlying_segment": segment,
             "expiry": selected_expiry,
             "underlying_price": underlying_price,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            # The option-chain endpoint does not document an exchange trade
+            # timestamp. Keep its local response receipt separate and do not
+            # use it as option-price provenance.
+            "timestamp": None,
+            "timestamp_basis": "receipt",
+            "received_at_timestamp": observed_at,
+            "observed_at": observed_at,
             "options": options,
         }
         with self._option_lock:
-            self.option_chains[normalized_symbol] = chain
-            self._option_received_at[normalized_symbol] = received_at
+            chain_key = (normalized_symbol, selected_expiry)
+            self.option_chains[chain_key] = chain
+            self._option_received_at[chain_key] = received_at
+            if use_default_expiry:
+                self._latest_option_expiry[normalized_symbol] = selected_expiry
         self._set_error(None)
-        return self._chain_with_age(normalized_symbol)
+        return self._chain_with_age(normalized_symbol, selected_expiry)
 
-    def _chain_with_age(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def _chain_with_age(
+        self, symbol: str, expiry: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         key = str(symbol or "").strip().upper()
         with self._option_lock:
-            stored = self.option_chains.get(key)
-            received_at = self._option_received_at.get(key)
+            selected_expiry = expiry or self._latest_option_expiry.get(key)
+            if selected_expiry is None:
+                cached_expiries = sorted(
+                    cached_expiry
+                    for cached_symbol, cached_expiry in self.option_chains
+                    if cached_symbol == key
+                )
+                selected_expiry = next(
+                    (item for item in cached_expiries if item >= date.today().isoformat()),
+                    None,
+                )
+            chain_key = (key, selected_expiry) if selected_expiry else None
+            stored = self.option_chains.get(chain_key) if chain_key else None
+            received_at = self._option_received_at.get(chain_key) if chain_key else None
             chain = dict(stored) if isinstance(stored, dict) else None
         if chain is None or received_at is None:
             return None
@@ -682,11 +902,10 @@ class DhanLiveClient:
         option_type: str,
         expiry: Optional[str],
     ) -> Optional[Dict[str, Any]]:
-        chain = self._chain_with_age(symbol)
+        chain = self._chain_with_age(symbol, expiry)
         if (
             chain is None
             or chain.get("stale")
-            or (expiry is not None and expiry != chain.get("expiry"))
         ):
             return None
         strike_key = _canonical_strike(strike)
@@ -703,26 +922,178 @@ class DhanLiveClient:
         if not isinstance(strike_row, dict):
             return None
         contract = strike_row.get(normalized_type)
-        if not self._valid_option_quote(contract):
+        security_id = self._option_identity(contract)
+        if security_id is None:
             return None
-        return {
-            **contract,
-            "symbol": chain["symbol"],
-            "underlying_id": chain["underlying_id"],
-            "underlying_segment": chain["underlying_segment"],
-            "underlying_price": chain["underlying_price"],
-            "strike": float(strike_key),
-            "option_type": normalized_type,
-            "expiry": chain["expiry"],
-            "timestamp": chain["timestamp"],
-            "age_seconds": chain["age_seconds"],
-            "stale": False,
-        }
+        quote = self._cached_option_quote(
+            symbol=chain["symbol"],
+            expiry=chain["expiry"],
+            strike=strike_key,
+            option_type=normalized_type,
+            expected_security_id=security_id,
+        )
+        return quote if quote and not quote.get("stale") else None
+
+    def _cached_option_quote(
+        self,
+        *,
+        symbol: str,
+        expiry: str,
+        strike: str,
+        option_type: str,
+        expected_security_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = (symbol.upper(), expiry, strike, option_type)
+        with self._option_lock:
+            stored = self._option_contract_quotes.get(cache_key)
+            received_at = self._option_quote_received_at.get(cache_key)
+            quote = dict(stored) if isinstance(stored, dict) else None
+        if (
+            quote is None
+            or received_at is None
+            or quote.get("security_id") != expected_security_id
+        ):
+            return None
+
+        receipt_age = self._monotonic() - received_at
+        timestamp = self._exchange_timestamp(quote.get("timestamp"))
+        exchange_age = None
+        if timestamp is not None:
+            parsed = datetime.fromisoformat(timestamp)
+            exchange_age = (
+                datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+            ).total_seconds()
+        if (
+            receipt_age < 0
+            or receipt_age > self.option_max_age_seconds
+            or exchange_age is None
+            or exchange_age < 0
+            or exchange_age > self.option_max_age_seconds
+        ):
+            quote.update(
+                {
+                    "close": None,
+                    "bid": None,
+                    "ask": None,
+                    "stale": True,
+                }
+            )
+            return quote
+        quote["receipt_age_seconds"] = round(receipt_age, 3)
+        quote["exchange_age_seconds"] = round(exchange_age, 3)
+        quote["age_seconds"] = round(max(receipt_age, exchange_age), 3)
+        quote["stale"] = False
+        return quote
+
+    def refresh_option_quote(
+        self,
+        symbol: str,
+        strike: Any,
+        option_type: str,
+        expiry: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Refresh an exact contract, keeping trade time distinct from observation.
+
+        Dhan's quote record supplies a last-trade timestamp, not a depth-update
+        timestamp. ``observed_at`` records when this client received the data.
+        """
+        normalized_symbol = str(symbol or "").strip().upper()
+        normalized_type = str(option_type or "").strip().upper()
+        strike_key = _canonical_strike(strike)
+        chain = self._chain_with_age(normalized_symbol, expiry)
+        if (
+            chain is None
+            or chain.get("stale")
+            or strike_key is None
+            or normalized_type not in {"CE", "PE"}
+        ):
+            return None
+        contract = (
+            chain.get("options", {})
+            .get(strike_key, {})
+            .get(normalized_type)
+        )
+        security_id = self._option_identity(contract)
+        if security_id is None:
+            return None
+
+        option_segment = (
+            "BSE_FNO"
+            if chain.get("underlying_segment") == "BSE_I"
+            or normalized_symbol == "SENSEX"
+            else "NSE_FNO"
+        )
+        cache_key = (normalized_symbol, expiry, strike_key, normalized_type)
+        with self._option_lock:
+            self._option_quote_attempted_at[cache_key] = self._monotonic()
+        body = self._post_json(
+            "/marketfeed/quote",
+            {option_segment: [security_id]},
+            endpoint="quote",
+        )
+        if body is None:
+            with self._option_lock:
+                self._option_contract_quotes.pop(cache_key, None)
+                self._option_quote_received_at.pop(cache_key, None)
+            return None
+        data = body.get("data")
+        segment_data = data.get(option_segment) if isinstance(data, dict) else None
+        record = segment_data.get(str(security_id)) if isinstance(segment_data, dict) else None
+        if not isinstance(record, dict):
+            self._set_error("Dhan option quote response omitted the requested contract")
+            with self._option_lock:
+                self._option_contract_quotes.pop(cache_key, None)
+                self._option_quote_received_at.pop(cache_key, None)
+            return None
+
+        received_at_timestamp = datetime.now(timezone.utc).isoformat()
+        quote = self._normalize_quote(
+            record,
+            symbol=normalized_symbol,
+            segment=option_segment,
+            received_at=received_at_timestamp,
+        )
+        if quote is None:
+            self._set_error("Dhan option quote response contained invalid prices")
+            with self._option_lock:
+                self._option_contract_quotes.pop(cache_key, None)
+                self._option_quote_received_at.pop(cache_key, None)
+            return None
+        quote.update(
+            {
+                "security_id": security_id,
+                "underlying_id": chain["underlying_id"],
+                "underlying_segment": chain["underlying_segment"],
+                "underlying_price": chain["underlying_price"],
+                "strike": float(strike_key),
+                "option_type": normalized_type,
+                "expiry": expiry,
+            }
+        )
+        with self._option_lock:
+            self._option_contract_quotes[cache_key] = quote
+            self._option_quote_received_at[cache_key] = self._monotonic()
+            self._option_quote_attempted_at[cache_key] = self._option_quote_received_at[
+                cache_key
+            ]
+        refreshed = self._cached_option_quote(
+            symbol=normalized_symbol,
+            expiry=expiry,
+            strike=strike_key,
+            option_type=normalized_type,
+            expected_security_id=security_id,
+        )
+        return refreshed if refreshed and not refreshed.get("stale") else None
 
     def select_atm_option(
         self, symbol: str, direction: str
     ) -> Optional[Dict[str, Any]]:
-        """Select a real, quoted ATM CE for BUY or PE for SELL."""
+        """Select an exact ATM contract identity from the cached option chain.
+
+        This method is deliberately cache-only. Its result identifies a chain
+        contract but is not an exchange-timed quote; call
+        :meth:`refresh_option_quote` explicitly to obtain a live mark.
+        """
         chain = self._chain_with_age(symbol)
         if chain is None or chain.get("stale"):
             return None
@@ -741,17 +1112,34 @@ class DhanLiveClient:
             except (TypeError, ValueError):
                 continue
             contract = strike_row.get(option_type)
-            if self._valid_option_quote(contract):
+            if self._option_identity(contract) is not None:
                 candidates.append((abs(strike - chain["underlying_price"]), strike))
         if not candidates:
             return None
         _, strike = min(candidates, key=lambda item: (item[0], item[1]))
-        return self._find_option(
-            symbol,
-            strike,
-            option_type,
-            expiry=chain.get("expiry"),
+        strike_key = _canonical_strike(strike)
+        contract = (
+            chain.get("options", {})
+            .get(strike_key, {})
+            .get(option_type)
         )
+        security_id = self._option_identity(contract)
+        if security_id is None:
+            return None
+        return {
+            "symbol": chain["symbol"],
+            "security_id": security_id,
+            "underlying_id": chain["underlying_id"],
+            "underlying_segment": chain["underlying_segment"],
+            "underlying_price": chain["underlying_price"],
+            "strike": float(strike_key),
+            "option_type": option_type,
+            "expiry": chain["expiry"],
+            "source": "option_chain",
+            "chain_observed_at": chain.get("observed_at")
+            or chain.get("received_at_timestamp"),
+            "chain_age_seconds": chain.get("age_seconds"),
+        }
 
     def get_option_quote(
         self,
@@ -760,7 +1148,11 @@ class DhanLiveClient:
         option_type: str,
         expiry: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Return only a fresh, fully quoted contract from the current chain."""
+        """Return a fresh exact-contract quote from cache, without network I/O.
+
+        Use :meth:`refresh_option_quote` explicitly when a missing or stale
+        cached mark needs refreshing.
+        """
         return self._find_option(symbol, strike, option_type, expiry)
 
     def get_market_snapshot(self) -> Dict[str, Any]:
@@ -778,18 +1170,18 @@ class DhanLiveClient:
 
         chains: Dict[str, Dict[str, Any]] = {}
         with self._option_lock:
-            chain_symbols = list(self.option_chains)
-        for symbol in chain_symbols:
-            chain = self._chain_with_age(symbol)
+            chain_keys = list(self.option_chains)
+        for symbol, expiry in chain_keys:
+            chain = self._chain_with_age(symbol, expiry)
             if chain is not None:
-                chains[symbol] = chain
+                chains[f"{symbol}:{expiry}"] = chain
 
         has_fresh_market_data = any(
             not quote["stale"] and quote["close"] is not None
             for quote in prices.values()
         ) or any(not chain["stale"] for chain in chains.values())
         has_cached_data = bool(prices or chains)
-        if not self._has_credentials:
+        if not self._cached_has_credentials:
             status = "credentials_missing"
         elif has_fresh_market_data:
             status = "live"

@@ -1,0 +1,1 @@
+- [Trading evidence boundaries](trading-evidence.md) — Dhan endpoint auth differs; preserve OHLC in replay and distinguish transaction time from depth observation.

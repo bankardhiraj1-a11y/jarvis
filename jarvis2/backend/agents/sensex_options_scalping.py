@@ -3,6 +3,23 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 import pytz
 
+
+def _timestamp_in_ist(value, ist):
+    """Normalize event timestamps so historical replay does not use wall time."""
+    if value is None:
+        return datetime.now(ist)
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Invalid market-data timestamp") from exc
+    if not isinstance(value, datetime):
+        raise ValueError("Invalid market-data timestamp")
+    if value.tzinfo is None:
+        return ist.localize(value)
+    return value.astimezone(ist)
+
+
 class SensexOptionsScalpingAgent(BaseAgent):
     """
     SENSEX Options Scalping - Breakout Momentum Strategy
@@ -38,6 +55,7 @@ class SensexOptionsScalpingAgent(BaseAgent):
         # Candle building (1-minute for scalping)
         self.completed_candles = []
         self.current_candle_start = None
+        self.current_candle_last_timestamp = None
         self.current_candle = {"open": None, "high": None, "low": None, "close": None, "volume": 0}
 
         # Strategy tracking
@@ -86,42 +104,52 @@ class SensexOptionsScalpingAgent(BaseAgent):
         else:
             return self.take_profit_pips_min  # 10 points
 
-    def process_tick(self, price: float, volume: float = 0):
+    def process_tick(self, price: float, volume: float = 0, timestamp=None):
         """Build 1-minute candles"""
         if price <= 0:
             return
 
-        now = datetime.now(self.ist)
+        now = _timestamp_in_ist(timestamp, self.ist)
+        candle_start = now.replace(second=0, microsecond=0)
 
-        if self.current_candle_start is None or self.current_candle_start.date() != now.date():
-            self.current_candle_start = now
+        if self.current_candle_start is None:
+            self.current_candle_start = candle_start
+            self.current_candle_last_timestamp = now
             self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
             return
 
-        elapsed = (now - self.current_candle_start).total_seconds()
+        if now < self.current_candle_last_timestamp:
+            return
 
-        self.current_candle["close"] = price
-        self.current_candle["high"] = max(self.current_candle["high"], price)
-        self.current_candle["low"] = min(self.current_candle["low"], price)
-        self.current_candle["volume"] = self.current_candle.get("volume", 0) + volume
+        if candle_start != self.current_candle_start:
+            if candle_start.date() == self.current_candle_start.date():
+                elapsed = (candle_start - self.current_candle_start).total_seconds()
+            else:
+                elapsed = None
 
-        # Complete candle after 60 seconds (1 minute)
-        if elapsed >= 60:
-            # Avoid treating a stalled feed or overnight gap as one authentic
-            # one-minute candle.
-            if elapsed <= 90:
+            # Close the old bar before incorporating the first tick of the next
+            # minute. Skip gaps; only observed consecutive minutes are stored.
+            if elapsed == 60:
                 self.completed_candles.append(self.current_candle.copy())
                 self.last_closed_candle = self.current_candle.copy()
 
                 if len(self.completed_candles) > 20:
                     self.completed_candles.pop(0)
 
-            self.current_candle_start = now
+            self.current_candle_start = candle_start
+            self.current_candle_last_timestamp = now
             self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
+            return
 
-    def can_trade_now(self) -> bool:
+        self.current_candle["close"] = price
+        self.current_candle["high"] = max(self.current_candle["high"], price)
+        self.current_candle["low"] = min(self.current_candle["low"], price)
+        self.current_candle["volume"] = self.current_candle.get("volume", 0) + volume
+        self.current_candle_last_timestamp = now
+
+    def can_trade_now(self, now=None) -> bool:
         """Check if we can place a trade (respects daily limit and cooldown)"""
-        now = datetime.now(self.ist)
+        now = _timestamp_in_ist(now, self.ist)
 
         # Reset trades counter at start of new day
         if self.trades_today and self.trades_today[0]['date'].date() != now.date():
@@ -144,9 +172,9 @@ class SensexOptionsScalpingAgent(BaseAgent):
 
         return True
 
-    def log_trade(self, signal: str, price: float):
+    def log_trade(self, signal: str, price: float, timestamp=None):
         """Log trade for daily limit tracking"""
-        now = datetime.now(self.ist)
+        now = _timestamp_in_ist(timestamp, self.ist)
         self.trades_today.append({
             'date': now,
             'signal': signal,
@@ -167,14 +195,15 @@ class SensexOptionsScalpingAgent(BaseAgent):
             if price <= 0:
                 return TrendSignal.HOLD
 
-            self.process_tick(price, live_data.get("volume", 0))
+            event_time = _timestamp_in_ist(live_data.get("timestamp"), self.ist)
+            self.process_tick(price, live_data.get("volume", 0), event_time)
 
             # Need at least 2 completed candles (previous + current forming)
             if len(self.completed_candles) < 2:
                 return TrendSignal.HOLD
 
             # Check if we can trade now
-            if not self.can_trade_now():
+            if not self.can_trade_now(event_time):
                 return TrendSignal.HOLD
 
             # Get last 2 candles
