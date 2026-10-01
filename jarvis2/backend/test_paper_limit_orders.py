@@ -173,7 +173,9 @@ def test_trigger_creates_two_atomic_sell_legs_at_actual_improved_bid(db):
     assert order.origin == "paper_manual"
     assert manual_order_for_trade(db, trades[0].id).id == order.id
     intent = manual_holding_intent(order)
-    assert intent["max_hold_minutes"] == 25
+    assert intent["holding_mode"] == "SL_TP_ROLLOVER"
+    assert intent["max_hold_minutes"] is None
+    assert "without an elapsed-time exit" in intent["reason"]
     assert intent["allow_overnight"] is False
     assert intent["session_override"] is True
 

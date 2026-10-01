@@ -1,4 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum, ForeignKey
+from sqlalchemy import (
+    Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum,
+    ForeignKey, JSON, Text, UniqueConstraint,
+)
 from datetime import datetime
 import enum
 import uuid
@@ -143,3 +146,31 @@ class ManualPaperOrder(Base):
     session_override = Column(Boolean, nullable=False, default=True)
     allow_overnight = Column(Boolean, nullable=False, default=False)
     last_reason = Column(String(500), nullable=True)
+
+
+class PaperTradeCorrection(Base):
+    """Immutable audit of a counterfactual correction to a paper trade exit."""
+
+    __tablename__ = "paper_trade_corrections"
+    __table_args__ = (
+        UniqueConstraint("request_id", "trade_id", name="uq_paper_correction_request_trade"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    request_id = Column(String(80), nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("paper_limit_orders.id"), nullable=False, index=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False, index=True)
+    original_status = Column(String(20), nullable=False)
+    original_exit_price = Column(Float, nullable=True)
+    original_closed_at = Column(DateTime, nullable=True)
+    original_exit_data_timestamp = Column(String(40), nullable=True)
+    original_pnl = Column(Float, nullable=True)
+    original_entry_fields = Column(JSON, nullable=False)
+    revision_at = Column(DateTime, nullable=False)
+    replay_sample_count = Column(Integer, nullable=False)
+    replay_data_note = Column(Text, nullable=False)
+    corrected_status = Column(String(20), nullable=False)
+    corrected_exit_price = Column(Float, nullable=True)
+    corrected_closed_at = Column(DateTime, nullable=True)
+    corrected_exit_data_timestamp = Column(String(40), nullable=True)
+    correction_reason = Column(String(200), nullable=False)

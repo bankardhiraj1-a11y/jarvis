@@ -194,6 +194,78 @@ def test_gold_idempotent_replay_uses_original_validation_clock(db):
     assert retry.status == "PENDING"
 
 
+@pytest.mark.parametrize("legacy_max_hold", [None, 25])
+def test_gold_api_serializes_strategy_managed_holding_without_elapsed_limit(
+    db, legacy_max_hold
+):
+    opened = datetime(2025, 6, 15, 18, 0, tzinfo=UTC)
+    order = create_manual_order(db, {
+        "market": "GOLD",
+        "symbol": "XAUUSD",
+        "side": "BUY",
+        "order_type": "MARKET",
+        "stop_loss": 2000,
+        "take_profit": 2020,
+        "quantity": 2,
+        "max_hold_minutes": legacy_max_hold,
+    }, now=opened)
+
+    assert order.max_hold_minutes == 25  # Existing non-null DB field / entry buffer.
+    serialized = serialize_manual_order(order, db)
+    assert serialized["holding_mode"] == "SL_TP_ROLLOVER"
+    assert serialized["max_hold_minutes"] is None
+    assert manual_holding_decision(
+        order, opened, opened + timedelta(minutes=25)
+    )["due"] is False
+    after_two_hours = manual_holding_decision(
+        order, opened, opened + timedelta(minutes=120)
+    )
+    assert after_two_hours["due"] is False
+    assert after_two_hours["deadline"] == "2025-06-15T20:59:00+00:00"
+    assert after_two_hours["policy"] == "manual_gold_sl_tp_rollover"
+    assert "elapsed-time exit" in after_two_hours["reason"]
+
+    at_rollover_winddown = manual_holding_decision(
+        order, opened, datetime(2025, 6, 15, 20, 59, tzinfo=UTC)
+    )
+    assert at_rollover_winddown["due"] is True
+    assert at_rollover_winddown["status"] == "NY_ROLLOVER_EXIT_DUE"
+
+
+def test_gold_session_cutoff_is_anchored_to_provider_entry_day(db):
+    opened = datetime(2025, 6, 15, 22, 0, tzinfo=UTC)
+    order = create_manual_order(db, {
+        "market": "GOLD",
+        "symbol": "XAUUSD",
+        "side": "SELL",
+        "order_type": "MARKET",
+        "stop_loss": 2020,
+        "take_profit": 1980,
+        "quantity": 1,
+    }, now=opened)
+    decision = manual_holding_decision(
+        order, opened.isoformat(), datetime(2025, 6, 15, 23, 0, tzinfo=UTC)
+    )
+
+    assert decision["due"] is True
+    assert decision["status"] == "UTC_SESSION_EXIT_DUE"
+    assert decision["deadline"] == "2025-06-15T23:00:00+00:00"
+
+
+def test_gold_api_rejects_nonlegacy_elapsed_hold_values(db):
+    with pytest.raises(ManualOrderError, match="max_hold_minutes must be null"):
+        create_manual_order(db, {
+            "market": "GOLD",
+            "symbol": "XAUUSD",
+            "side": "BUY",
+            "order_type": "MARKET",
+            "stop_loss": 2000,
+            "take_profit": 2020,
+            "quantity": 1,
+            "max_hold_minutes": 24,
+        }, now=now_utc())
+
+
 @pytest.mark.parametrize("key", [7, "", "x" * 81])
 def test_client_order_id_requires_nonempty_string_at_most_80_chars(db, key):
     with pytest.raises(ManualOrderError, match="client_order_id"):

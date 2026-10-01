@@ -534,16 +534,18 @@ def manual_order_for_trade(db, trade_id) -> Optional[PaperLimitOrder]:
 
 
 def manual_holding_intent(order: PaperLimitOrder) -> dict[str, Any]:
-    """Explicit bounded intent for the caller's per-trade session override."""
+    """Explicit strategy-managed intent for a manual Gold session override."""
     return {
         "manual_order": True,
         "session_override": True,
-        "max_hold_minutes": 25,
+        "holding_mode": "SL_TP_ROLLOVER",
+        "max_hold_minutes": None,
         "allow_overnight": False,
         "reason": (
             "User-selected manual XAUUSD paper order; bypass only the normal "
-            "London signal-session entry gate, while retaining the 25-minute "
-            "maximum hold, UTC session cutoff, and New York rollover wind-down."
+            "London signal-session entry gate. Stops and targets manage the "
+            "position without an elapsed-time exit; close by the UTC session "
+            "cutoff or New York rollover wind-down."
         ),
         "order_id": getattr(order, "id", None),
         "origin": "paper_manual",

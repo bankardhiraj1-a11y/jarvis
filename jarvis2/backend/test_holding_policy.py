@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from trading.holding_policy import (
@@ -92,6 +92,26 @@ def test_xauusd_defaults_to_bounded_short_hold_and_rejects_late_entry():
     assert not entry_allowed_by_holding_policy(
         "XAUUSD", now=datetime(2025, 1, 2, 23, 0, tzinfo=timezone.utc)
     )
+
+
+def test_xauusd_strategy_supplied_25_minute_exit_bound_is_unchanged():
+    opened = datetime(2025, 1, 15, 9, 0, tzinfo=timezone.utc)
+    intent = {"max_hold_minutes": 25, "allow_overnight": False}
+    before_bound = holding_exit_decision(
+        trade("XAUUSD", opened),
+        now=opened + timedelta(minutes=24),
+        holding_intent=intent,
+    )
+    at_bound = holding_exit_decision(
+        trade("XAUUSD", opened),
+        now=opened + timedelta(minutes=25),
+        holding_intent=intent,
+    )
+
+    assert before_bound["due"] is False
+    assert before_bound["deadline"] == "2025-01-15T09:25:00+00:00"
+    assert at_bound["due"] is True
+    assert at_bound["status"] == "MAX_HOLD_EXIT_DUE"
 
 
 def test_xauusd_overnight_requires_explicit_intent_reason_and_verified_costs():

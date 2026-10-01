@@ -12,7 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.exc import StaleDataError
 
 from models import ManualPaperOrder, Trade
-from trading.holding_policy import holding_exit_decision, next_gold_rollover_deadline
+from trading.holding_policy import next_gold_rollover_deadline
+from trading.manual_gold_holding import manual_gold_holding_decision
 
 
 _UTC = timezone.utc
@@ -20,6 +21,7 @@ _IST = ZoneInfo("Asia/Kolkata")
 _MAX_AGE_SECONDS = 15.0
 _GOLD_MAX_OUNCES = 15.0
 _GOLD_MAX_RISK = 150.0
+_GOLD_ENTRY_BUFFER_MINUTES = 25
 _INDIA_MAX_RISK = 1000.0
 _STOCKS = frozenset({"RELIANCE", "TCS", "INFY", "HDFCBANK", "BAJAJ-AUTO"})
 _OPTION_UNDERLYINGS = frozenset({"SENSEX", "NIFTY", "BANKNIFTY"})
@@ -95,11 +97,11 @@ def _gold_hard_closing_deadline(now_utc: datetime) -> datetime:
 
 
 def _safe_gold_deadline(
-    now_utc: datetime, max_hold_minutes: int = 25
+    now_utc: datetime, entry_buffer_minutes: int = _GOLD_ENTRY_BUFFER_MINUTES
 ) -> datetime:
-    """Latest safe entry time, reserving the full manual maximum hold."""
+    """Latest safe entry time, reserving a conservative 25-minute buffer."""
     return _gold_hard_closing_deadline(now_utc) - timedelta(
-        minutes=max_hold_minutes
+        minutes=entry_buffer_minutes
     )
 
 
@@ -194,10 +196,27 @@ def _validated_payload(payload: Any, now_utc: datetime) -> dict[str, Any]:
         expiry = expiry_date.isoformat()
 
     max_hold = payload.get("max_hold_minutes")
-    if max_hold is None:
-        max_hold = 25 if market == "GOLD" else 20
-    if isinstance(max_hold, bool) or not isinstance(max_hold, int) or not 1 <= max_hold <= 25:
-        raise OrderError("max_hold_minutes must be an integer from 1 through 25")
+    if market == "GOLD":
+        if max_hold is not None and (
+            isinstance(max_hold, bool)
+            or not isinstance(max_hold, int)
+            or max_hold != _GOLD_ENTRY_BUFFER_MINUTES
+        ):
+            raise OrderError(
+                "Gold max_hold_minutes must be null; legacy 25-minute payloads are accepted"
+            )
+        # Keep 25 in the non-null legacy field for compatibility. The separate
+        # entry buffer is enforced below; this stored value is never an exit timer.
+        max_hold = _GOLD_ENTRY_BUFFER_MINUTES
+    else:
+        if max_hold is None:
+            max_hold = 20
+        if (
+            isinstance(max_hold, bool)
+            or not isinstance(max_hold, int)
+            or not 1 <= max_hold <= 25
+        ):
+            raise OrderError("max_hold_minutes must be an integer from 1 through 25")
 
     if take_profit_2 is not None:
         if market == "STOCKS" and int(quantity) < 2:
@@ -213,7 +232,7 @@ def _validated_payload(payload: Any, now_utc: datetime) -> dict[str, Any]:
             currency = "USD" if market == "GOLD" else "INR"
             raise OrderError(f"Planned stop risk must not exceed {currency} {risk_cap:g}")
     if market == "GOLD":
-        deadline = _safe_gold_deadline(now_utc, max_hold)
+        deadline = _safe_gold_deadline(now_utc, _GOLD_ENTRY_BUFFER_MINUTES)
         if now_utc >= deadline:
             raise OrderError("New XAUUSD orders are disabled at the safe-entry cutoff")
         expires_at = deadline
@@ -322,7 +341,13 @@ def serialize_manual_order(order: ManualPaperOrder, db=None) -> dict[str, Any]:
         "manual_order": bool(order.manual_order),
         "session_override": bool(order.session_override),
         "allow_overnight": bool(order.allow_overnight),
-        "max_hold_minutes": int(order.max_hold_minutes),
+        **(
+            {"holding_mode": "SL_TP_ROLLOVER"}
+            if order.market == "GOLD" else {}
+        ),
+        "max_hold_minutes": (
+            None if order.market == "GOLD" else int(order.max_hold_minutes)
+        ),
         "option_lot_size": order.option_lot_size,
         "legs": legs,
     }
@@ -387,13 +412,21 @@ def manual_order_for_trade(db, trade_id) -> Optional[ManualPaperOrder]:
 
 
 def manual_holding_intent(order: ManualPaperOrder) -> dict[str, Any]:
-    """Policy metadata for the caller to enforce a bounded manual holding window."""
+    """Policy metadata for the caller's market-specific manual holding rules."""
+    is_gold = order.market == "GOLD"
     return {
         "manual_order": True,
         "session_override": True,
         "allow_overnight": False,
-        "max_hold_minutes": int(order.max_hold_minutes),
-        "reason": "User-selected manual paper order; no overnight holding is allowed.",
+        **({"holding_mode": "SL_TP_ROLLOVER"} if is_gold else {}),
+        "max_hold_minutes": None if is_gold else int(order.max_hold_minutes),
+        "reason": (
+            "User-selected manual XAUUSD paper order; stop/target-managed holding "
+            "has no elapsed-time exit and is closed only by the UTC-session or "
+            "New York rollover safety cutoff."
+            if is_gold else
+            "User-selected manual paper order; no overnight holding is allowed."
+        ),
         "order_id": getattr(order, "id", None),
         "market": order.market,
         "symbol": order.symbol,
@@ -403,21 +436,14 @@ def manual_holding_intent(order: ManualPaperOrder) -> dict[str, Any]:
 def manual_holding_decision(
     order: ManualPaperOrder, entry_time: Any, now: Any
 ) -> dict[str, Any]:
-    """Apply bounded manual holding rules, including cash intraday SELLs."""
+    """Apply strategy-managed Gold or bounded Indian manual holding rules."""
+    if order.market == "GOLD":
+        return manual_gold_holding_decision(entry_time, now)
+
     now_utc = _as_utc(now, "now")
     try:
         opened = _as_utc(entry_time, "entry_time")
     except OrderError:
-        if order.market == "GOLD":
-            return holding_exit_decision(
-                {
-                    "agent": "XAUUSD",
-                    "status": "OPEN",
-                    "created_at": None,
-                },
-                now=now_utc,
-                holding_intent=manual_holding_intent(order),
-            )
         return {
             "due": True,
             "reason": "Manual Indian-market position has no trustworthy entry timestamp; close using a fresh provider quote.",
@@ -425,21 +451,6 @@ def manual_holding_decision(
             "deadline": None,
             "policy": "manual_indian_intraday_bounded",
         }
-    if order.market == "GOLD":
-        trade = {
-            "agent": "XAUUSD",
-            "status": "OPEN",
-            "created_at": opened,
-        }
-        intent = {
-            "allow_overnight": False,
-            "max_hold_minutes": int(order.max_hold_minutes),
-            "reason": "Manual paper orders do not permit overnight holding.",
-        }
-        return holding_exit_decision(
-            trade, now=now_utc, holding_intent=intent
-        )
-
     entry_day = opened.astimezone(_IST).date()
     cutoff = _india_cutoff(entry_day)
     maximum = opened + timedelta(minutes=int(order.max_hold_minutes))

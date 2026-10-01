@@ -18,6 +18,7 @@ from trading.live_paper import (
     provider_side_price,
 )
 from trading.manual_paper_orders import (
+    _GOLD_ENTRY_BUFFER_MINUTES,
     _GOLD_MAX_RISK,
     _INDIA_CUTOFF,
     _INDIA_MAX_RISK,
@@ -492,10 +493,13 @@ def process_manual_orders(
             continue
         if (
             order.market == "GOLD"
-            and event_time + timedelta(minutes=order.max_hold_minutes)
+            and event_time + timedelta(minutes=_GOLD_ENTRY_BUFFER_MINUTES)
             > _gold_hard_closing_deadline(event_time)
         ):
-            skipped(order, "Full maximum hold does not fit before the XAUUSD safe cutoff")
+            skipped(
+                order,
+                "Conservative 25-minute entry buffer does not fit before the XAUUSD safe cutoff",
+            )
             continue
 
         order.option_lot_size = lot_size
