@@ -1,0 +1,34 @@
+{
+  "scope_id": "XAUUSD-H4-M15-M3-OANDA-practice-forward-v1",
+  "frozen_at_provider_clock_utc": "2026-10-01T18:59:46Z",
+  "start_exclusive_utc": "2026-10-01T18:59:46Z",
+  "decision_window_end_exclusive_utc": "2026-10-31T18:59:46Z",
+  "strategy_definition": "research/xauusd-multiframe-paper.md",
+  "frozen_sha256": {
+    "research/xauusd-multiframe-paper.md": "ab2fd19beb5f5784eca4adda1b6e44b6d3984de78f598f261bd0343886527df8",
+    "jarvis2/backend/agents/xauusd_multiframe.py": "ef8c871241d490f955338926ee7cdae7601e2d251c8e628917481c7e4c8f0fdb",
+    "jarvis2/backend/data/xauusd_multiframe_feed.py": "4fb6f1a1b9ea31ccb9ee76937e116c23737d7f915514d383f87cfba633e4bd26"
+  },
+  "instrument": "OANDA:XAU_USD",
+  "environment": "practice",
+  "decision_unit": "one unique completed M3 decision, not each polling call",
+  "input_requirements": [
+    "OANDA provider-generated UTC candle timestamps",
+    "completed H4, M15 and M3 candles",
+    "decision timestamp strictly later than the frozen start",
+    "record snapshot environment and frame-bar open/observation timestamps",
+    "retain HOLD/blocker decisions, not only actionable signals"
+  ],
+  "accepted_fill_inclusion": "Accepted automatic XAUUSD PAPER positions only, matched by real OANDA entry timestamp after the start. Exclude manual orders, corrected manual-paper positions, broker executions and older strategies.",
+  "outcome_rule": "Use observed executable-side OANDA bid/ask at paper entry/exit; unknown fees, funding and gap costs remain unquantified. Do not mark-to-midpoint or assume an unobserved fill.",
+  "descriptive_minimum": {
+    "closed_automatic_paper_fills": 30,
+    "distinct_provider_utc_entry_dates": 10
+  },
+  "if_minimum_is_not_met": "Report sample as insufficient; do not claim win-rate or profitability validation.",
+  "holdout": "The existing final holdout and every historical backtest/optimization/session-study artifact are reserved and excluded from this evaluation.",
+  "retuning": "No thresholds, session windows, risk parameters or rule changes may be selected from this frozen forward period.",
+  "broker_execution": "None; practice PAPER observations and records only.",
+  "planned_risk_usd": 150,
+  "risk_note": "Planned gross price risk only; not a guaranteed maximum realized loss or net result."
+}

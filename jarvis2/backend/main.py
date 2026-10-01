@@ -46,6 +46,9 @@ from orchestrator.boss_agent import BossAgent
 from orchestrator.agent_team import AgentTeam
 from backtest.backtest_engine import BacktestEngine
 from backtest.live_capture import LiveObservationRecorder
+from backtest.xauusd_multiframe_forward_evidence import (
+    XauusdMultiframeForwardEvidence,
+)
 from data.dhan_live_client import DhanLiveClient
 from data.onda_client import OndaClient
 from data.xauusd_multiframe_feed import XauusdMultiFrameFeed
@@ -137,6 +140,23 @@ live_observation_recorder = LiveObservationRecorder(evidence_dir / "live_observa
 xau_observation_recorder = LiveObservationRecorder(
     evidence_dir / "xauusd_observations.sqlite", source="OANDA"
 )
+xau_multiframe_forward_evidence = XauusdMultiframeForwardEvidence(
+    evidence_dir / "xauusd_multiframe_forward.sqlite",
+    Path(__file__).resolve().parents[2]
+    / "research/xauusd-multiframe-forward-freeze-2026-10-01.json",
+    Path(__file__).resolve().parents[2],
+)
+
+
+def _record_xau_multiframe_decision(decision):
+    agent = agents_map["XAUUSD"]
+    quote = onda_client.latest_prices.get("XAUUSD")
+    xau_multiframe_forward_evidence.record_decision(
+        decision, agent._snapshot, quote
+    )
+
+
+agents_map["XAUUSD"].set_decision_callback(_record_xau_multiframe_decision)
 
 # WebSocket subscriptions for live market feed
 # Build instrument list for subscription
@@ -1104,8 +1124,49 @@ def _daily_review_records(trades, review_date, agent_name):
     return records
 
 
+def _collect_xau_multiframe_fills(db):
+    """Append actual automatic OANDA PAPER entries/exits; exclude every manual order."""
+    if xau_multiframe_forward_evidence.status != "recording":
+        return
+    trades = db.query(Trade).filter(
+        Trade.agent == AgentName.XAUUSD,
+        Trade.data_source == "OANDA",
+    ).all()
+    for trade in trades:
+        if (
+            manual_order_for_trade(db, trade.id)
+            or general_manual_order_for_trade(db, trade.id)
+        ):
+            continue
+        entry_at = getattr(trade, "entry_data_timestamp", None)
+        if not entry_at:
+            continue
+        side = getattr(getattr(trade, "trade_type", None), "value", "")
+        decision_id = xau_multiframe_forward_evidence.decision_for_entry(
+            entry_at, side
+        )
+        xau_multiframe_forward_evidence.record_trade_event(
+            trade, "accepted_entry", decision_id
+        )
+        if (
+            str(getattr(trade, "status", "")).upper() == "CLOSED"
+            and getattr(trade, "exit_data_timestamp", None)
+        ):
+            xau_multiframe_forward_evidence.record_trade_event(
+                trade, "closed_exit", decision_id
+            )
+
+
 def _write_daily_review(db, now_utc):
     """Write date-stamped evidence from closed paper DB rows; never create fills."""
+    try:
+        _collect_xau_multiframe_fills(db)
+    except Exception:
+        xau_multiframe_forward_evidence.status = "trade_capture_error"
+        xau_multiframe_forward_evidence.error = (
+            "Automatic Gold PAPER fill evidence could not be persisted; review required."
+        )
+        logger.error("Gold forward-paper fill evidence capture failed")
     now_utc = now_utc.astimezone(timezone.utc)
     now_ist = now_utc.astimezone(pytz.timezone("Asia/Kolkata"))
     all_trades = db.query(Trade).all()
@@ -1418,6 +1479,7 @@ async def lifespan(app: FastAPI):
                     "session_study": _XAU_SESSION_STUDY_STATUS,
                     "active_entry_window": xau_entry_window,
                     "strategy_parameters": _xau_strategy_parameters(),
+                    "forward_evidence": xau_multiframe_forward_evidence.report(),
                     "forward_paper_hypothesis_only": True,
                     "profitability_claim": False,
                     "quote_collection_independent_of_entry_session": True,
@@ -3018,6 +3080,13 @@ async def get_backtest_review():
         return build_comparison(evidence_dir)
     except (OSError, ValueError, TypeError):
         raise HTTPException(status_code=503, detail="All-agent backtest evidence is unavailable")
+
+
+@app.get("/research/xauusd/multiframe-evaluation")
+async def get_xauusd_multiframe_evaluation():
+    """Expose the frozen forward-only sample without mixing old Gold trades."""
+    return xau_multiframe_forward_evidence.report()
+
 
 @app.get("/data/market-snapshot")
 async def get_market_snapshot():
