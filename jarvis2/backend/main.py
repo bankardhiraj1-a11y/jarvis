@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -6,14 +6,14 @@ from sqlalchemy.orm import Session
 from contextlib import asynccontextmanager
 import json
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from pathlib import Path
 import logging
 import sys
 import pytz
 from dotenv import load_dotenv
 
-load_dotenv()  # Load ONDA_ACCESS_TOKEN from .env
+load_dotenv()  # Provider credentials are read only from environment variables.
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -36,9 +36,21 @@ from backtest.backtest_engine import BacktestEngine
 from data.dhan_live_client import DhanLiveClient
 from data.onda_client import OndaClient
 from scheduler.autonomous_optimizer import AutonomousOptimizer
+from trading.live_paper import (
+    build_long_option_paper_entry,
+    ensure_trade_provenance_columns,
+    is_verified_closed_trade,
+    option_entry_and_exit_prices,
+    parse_option_contract,
+    provider_side_price,
+    quote_has_timestamp,
+    quote_is_fresh,
+    verified_closed_trade_metrics,
+)
 
 settings = get_settings()
 Base.metadata.create_all(bind=engine)
+ensure_trade_provenance_columns(engine)
 
 agents_map = {
     "STOCKS": StocksAgent(),
@@ -63,15 +75,14 @@ SYMBOL_TO_ID = {
     "RELIANCE": 2885,
     "TCS": 11536,
     "INFY": 1594,
-    "HDFC": 1333,        # HDFCBANK
+    "HDFCBANK": 1333,
     "BAJAJ-AUTO": 16669,
     "SENSEX": 51,        # Index
     "NIFTY": 13,         # Index
     "BANKNIFTY": 25,     # Index
 }
 
-# India NSE/BSE trading charges
-# REAL Zerodha India charges (from brokerage calculator)
+# Estimated Indian-market paper fee schedule; not a broker statement.
 ZERODHA_CHARGES = {
     # NSE Intraday Equity (STOCKS/SENSEX/OPTIONS indices)
     "NSE_EQUITY_INTRADAY": {
@@ -101,19 +112,20 @@ ZERODHA_CHARGES = {
         "sebi_charge_flat": 0.5,        # ₹0.5 per side
         "stamp_duty_flat": 5,           # ₹5 per round trip
     },
-    # XAUUSD Forex (ECN/STP broker via ONDA API)
-    "XAUUSD_FOREX": {
-        "commission_per_lot_usd": 4.50,  # $4.50 per standard lot (100 oz) round-trip ONLY
-    },
 }
 
 def calculate_net_pnl(entry_price, exit_price, quantity, trade_type, symbol):
-    """Calculate P&L after deducting REAL Zerodha/broker charges"""
+    """Paper P&L with modeled Indian fees and executable OANDA side fills."""
     # Raw P&L
     if trade_type == "BUY":
         raw_pnl = (exit_price - entry_price) * quantity
     else:  # SELL
         raw_pnl = (entry_price - exit_price) * quantity
+
+    if symbol == "XAUUSD":
+        # Executable OANDA bid/ask fills already include the quoted spread.
+        # Do not add an unverified commission assumption or count spread twice.
+        return raw_pnl
 
     # SENSEX_OPTIONS_SCALPING: Use minimal charges (premium-based, not index-based)
     # Options have different charge structure - for now use minimal charges
@@ -123,12 +135,7 @@ def calculate_net_pnl(entry_price, exit_price, quantity, trade_type, symbol):
         return raw_pnl - total_charges
 
     # Determine charge structure based on symbol
-    if symbol == "XAUUSD":
-        charges = ZERODHA_CHARGES["XAUUSD_FOREX"]
-        # For USD-based forex: commission is in USD
-        # Assuming standard lot size = 100 oz, and entry_price is in USD/oz
-        total_charges = charges["commission_per_lot_usd"] * (quantity / 100)
-    elif symbol in ["SENSEX", "BANKNIFTY", "NIFTY"]:
+    if symbol in ["SENSEX", "BANKNIFTY", "NIFTY"]:
         # Index F&O scalping uses NSE_FNO rates
         charges = ZERODHA_CHARGES["NSE_FNO"]
         brokerage = charges["brokerage_flat"] * 2
@@ -153,14 +160,14 @@ def calculate_net_pnl(entry_price, exit_price, quantity, trade_type, symbol):
     return net_pnl
 
 _instruments_to_subscribe = [
-    {"ExchangeSegment": "NSE_EQ", "SecurityId": "2885"},    # RELIANCE
-    {"ExchangeSegment": "NSE_EQ", "SecurityId": "11536"},   # TCS
-    {"ExchangeSegment": "NSE_EQ", "SecurityId": "1594"},    # INFY
-    {"ExchangeSegment": "NSE_EQ", "SecurityId": "1333"},    # HDFCBANK
-    {"ExchangeSegment": "NSE_EQ", "SecurityId": "16669"},   # BAJAJ-AUTO
-    {"ExchangeSegment": "IDX_I", "SecurityId": "51"},       # SENSEX (index)
-    {"ExchangeSegment": "IDX_I", "SecurityId": "13"},       # NIFTY (index)
-    {"ExchangeSegment": "IDX_I", "SecurityId": "25"},       # BANKNIFTY (index)
+    {"ExchangeSegment": "NSE_EQ", "SecurityId": "2885", "Symbol": "RELIANCE"},
+    {"ExchangeSegment": "NSE_EQ", "SecurityId": "11536", "Symbol": "TCS"},
+    {"ExchangeSegment": "NSE_EQ", "SecurityId": "1594", "Symbol": "INFY"},
+    {"ExchangeSegment": "NSE_EQ", "SecurityId": "1333", "Symbol": "HDFCBANK"},
+    {"ExchangeSegment": "NSE_EQ", "SecurityId": "16669", "Symbol": "BAJAJ-AUTO"},
+    {"ExchangeSegment": "IDX_I", "SecurityId": "51", "Symbol": "SENSEX"},
+    {"ExchangeSegment": "IDX_I", "SecurityId": "13", "Symbol": "NIFTY"},
+    {"ExchangeSegment": "IDX_I", "SecurityId": "25", "Symbol": "BANKNIFTY"},
 ]
 boss_agent = None
 agent_team = None
@@ -168,11 +175,244 @@ autonomous_optimizer = None
 
 portfolio_state = {
     "total_pnl": 0.0,
-    "net_worth": 100000.0,
+    "net_worth": settings.INITIAL_CAPITAL,
     "positions": {},
     "active_trades": 0,
     "agent_performance": {}
 }
+
+_OPTION_UNDERLYINGS = {
+    "SENSEX": 51,
+    "BANKNIFTY": 25,
+    "NIFTY": 13,
+}
+_VOLUME_STATE = {}
+_AGENT_RUNTIME_STATUS = {
+    "STOCKS": {"status": "WAITING_FOR_DATA", "reason": "Waiting for fresh Dhan quotes"},
+    "SENSEX": {
+        "status": "DISABLED",
+        "reason": "Legacy SENSEX multi-leg spread/condor has no supported multi-leg paper execution",
+    },
+    "OPTIONS": {"status": "WAITING_FOR_DATA", "reason": "Waiting for fresh Dhan quotes and option-chain data"},
+    "XAUUSD": {"status": "WAITING_FOR_DATA", "reason": "Waiting for fresh OANDA quotes"},
+    "SENSEX_OPTIONS_SCALPING": {
+        "status": "WAITING_FOR_DATA",
+        "reason": "Waiting for fresh SENSEX index and option-chain data",
+    },
+}
+_AGENT_SYMBOLS = {
+    "STOCKS": ["RELIANCE", "TCS", "INFY", "HDFCBANK", "BAJAJ-AUTO"],
+    "OPTIONS": ["NIFTY", "BANKNIFTY"],
+    "XAUUSD": ["XAUUSD"],
+    "SENSEX_OPTIONS_SCALPING": ["SENSEX"],
+}
+
+
+def _safe_provider_status(status):
+    """Expose operational status only; never serialize credentials or arbitrary objects."""
+    if not isinstance(status, dict):
+        return {"connected": False, "status": "unavailable"}
+    allowed = {
+        "connected",
+        "status",
+        "last_error",
+        "last_update",
+        "last_success_at",
+        "age_seconds",
+        "stale",
+        "symbol",
+        "source",
+    }
+    safe = {
+        key: status[key]
+        for key in allowed
+        if key in status
+        and status[key] is not None
+        and isinstance(status[key], (str, int, float, bool))
+    }
+    safe.setdefault("status", "unavailable")
+    safe.setdefault("connected", False)
+    return safe
+
+
+def _market_hours_open(agent_name):
+    ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
+    utc_now = datetime.now(pytz.UTC)
+    if agent_name == "XAUUSD":
+        return time(16, 0) <= utc_now.time() < time(23, 0)
+    return (
+        ist_now.weekday() < 5
+        and time(9, 15) <= ist_now.time() <= time(15, 30)
+    )
+
+
+def _fresh_indian_quote(symbol):
+    security_id = SYMBOL_TO_ID.get(symbol)
+    if not security_id:
+        return None
+    segment = "NSE_EQ" if symbol in {"RELIANCE", "TCS", "INFY", "HDFCBANK", "BAJAJ-AUTO"} else "IDX_I"
+    quote = dhan_client.get_live_data(security_id, symbol, segment)
+    if not quote_is_fresh(quote) or not quote_has_timestamp(quote):
+        return None
+    return quote
+
+
+def _cached_trade_mark(trade):
+    """Read only cached provider prices; never make an HTTP request from a GET route."""
+    source = str(getattr(trade, "data_source", "") or "").upper()
+    if source == "DHAN":
+        contract = parse_option_contract(getattr(trade, "option_strike", None))
+        if contract:
+            quote = dhan_client.get_option_quote(trade.symbol, **contract)
+            prices = option_entry_and_exit_prices(quote)
+            return (prices[1], quote) if prices else (None, None)
+        quote = _fresh_indian_quote(trade.symbol)
+        return (quote.get("close"), quote) if quote else (None, None)
+    if source == "OANDA":
+        cached = getattr(onda_client, "latest_prices", {}).get(trade.symbol)
+        if isinstance(cached, dict) and quote_is_fresh(cached):
+            exit_side = "SELL" if trade.trade_type.value == "BUY" else "BUY"
+            return provider_side_price(cached, exit_side), cached
+    return None, None
+
+
+def _monitor_open_trade(db, trade, agent_name):
+    if not trade.data_source or not trade.entry_data_timestamp:
+        return (
+            "UNVERIFIED_LEGACY_TRADE",
+            "Existing trade lacks live-data provenance; it is preserved and not repriced",
+        )
+    current_price, current_quote = _cached_trade_mark(trade)
+    if (
+        current_price is None
+        or not quote_is_fresh(current_quote)
+        or not quote_has_timestamp(current_quote)
+    ):
+        return (
+            "WAITING_FOR_DATA",
+            "Fresh cached quote for the open position is unavailable",
+        )
+
+    now_ist = datetime.now(pytz.timezone("Asia/Kolkata"))
+    created_at = trade.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    opened_on_previous_session = (
+        created_at.astimezone(pytz.timezone("Asia/Kolkata")).date()
+        < now_ist.date()
+    )
+    hard_exit_due = (
+        (
+            agent_name == "OPTIONS"
+            and (
+                opened_on_previous_session
+                or (now_ist.hour, now_ist.minute) >= (15, 15)
+            )
+        )
+        or (
+            agent_name == "SENSEX_OPTIONS_SCALPING"
+            and (
+                opened_on_previous_session
+                or (now_ist.hour, now_ist.minute) >= (15, 25)
+            )
+        )
+    )
+    if trade.trade_type.value == "BUY":
+        should_close = (
+            (trade.take_profit and current_price >= trade.take_profit)
+            or (trade.stop_loss and current_price <= trade.stop_loss)
+        )
+    else:
+        should_close = (
+            (trade.take_profit and current_price <= trade.take_profit)
+            or (trade.stop_loss and current_price >= trade.stop_loss)
+        )
+    should_close = bool(should_close or hard_exit_due)
+
+    if not should_close:
+        return (
+            "PAPER_POSITION_OPEN",
+            "Monitoring the exact live-provider instrument price",
+        )
+
+    trade.exit_price = current_price
+    trade.pnl = calculate_net_pnl(
+        trade.entry_price,
+        current_price,
+        trade.quantity,
+        trade.trade_type.value,
+        trade.symbol,
+    )
+    trade.status = "CLOSED"
+    trade.closed_at = datetime.utcnow()
+    trade.exit_data_timestamp = (
+        current_quote.get("timestamp")
+        if isinstance(current_quote.get("timestamp"), str)
+        else None
+    )
+    db.commit()
+    if agent_name == "OPTIONS":
+        agents_map[agent_name].close_paper_position(trade.symbol)
+    return (
+        "TRADE_CLOSED",
+        "Closed at fresh cached provider price"
+        + (" at the strategy's intraday cutoff" if hard_exit_due else " after a risk threshold"),
+    )
+
+
+def _volume_delta(symbol, quote):
+    """Convert Dhan's cumulative day volume into a per-poll interval delta."""
+    raw_volume = quote.get("volume")
+    if raw_volume is None:
+        return 0
+    try:
+        current = max(0.0, float(raw_volume))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    today = datetime.now(pytz.timezone("Asia/Kolkata")).date().isoformat()
+    previous = _VOLUME_STATE.get(symbol)
+    if not previous or previous[0] != today or current < previous[1]:
+        delta = current
+    else:
+        delta = current - previous[1]
+    _VOLUME_STATE[symbol] = (today, current)
+    return delta
+
+
+def _agent_history_status(agent_name, symbol):
+    agent = agents_map.get(agent_name)
+    status_fn = getattr(agent, "get_history_status", None)
+    if callable(status_fn):
+        try:
+            return status_fn(symbol)
+        except Exception:
+            return {"status": "WARMING_UP", "reason": "Strategy history status unavailable"}
+    return {"status": "READY", "reason": "Strategy ready"}
+
+
+def _option_quote_is_usable(quote):
+    return option_entry_and_exit_prices(quote) is not None
+
+
+def _provider_status():
+    dhan_snapshot = {}
+    try:
+        dhan_snapshot = dhan_client.get_market_snapshot()
+    except Exception:
+        dhan_snapshot = {}
+    dhan_status = _safe_provider_status({
+        "source": dhan_snapshot.get("source"),
+        "status": dhan_snapshot.get("status"),
+        "connected": dhan_snapshot.get("connected"),
+        "last_error": dhan_snapshot.get("last_error"),
+    })
+
+    oanda_status = {}
+    try:
+        oanda_status = _safe_provider_status(onda_client.get_status())
+    except Exception:
+        oanda_status = {"connected": False, "status": "unavailable"}
+    return dhan_status, oanda_status
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -196,18 +436,13 @@ async def lifespan(app: FastAPI):
                 "losing_trades": 0,
                 "win_rate": 0.0,
                 "total_pnl": 0.0,
-                "confidence": 0.5,
+                "confidence": 0.0,
                 "status": "IDLE",
                 "analyzing": False,
             }
         print("[OK] All agents initialized", flush=True)
 
-        # Subscribe to DhanHQ WebSocket for live market feed
-        print("[INFO] Subscribing to DhanHQ live market feed...", flush=True)
-        if dhan_client.subscribe(_instruments_to_subscribe):
-            print("[OK] DhanHQ WebSocket subscription successful", flush=True)
-        else:
-            print("[WARN] DhanHQ WebSocket subscription failed - will retry", flush=True)
+        print("[INFO] Dhan read-only REST feed will refresh asynchronously.", flush=True)
     except Exception as e:
         print(f"[ERROR] Agent init failed: {e}", flush=True)
 
@@ -219,222 +454,324 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[WARN] Boss/Team init skipped: {e}")
 
-    # Start background LIVE market data feeder
-    async def live_market_feeder():
-        """Fetch LIVE market data from DhanHQ and feed to agents"""
-        # Exchange segments for each agent (DhanHQ format: NSE_EQ, NSE_FO, etc.)
-        agent_segments = {
-            "STOCKS": "NSE_EQ",              # NSE Equity
-            "SENSEX": "IDX_I",               # BSE/NSE Index
-            "OPTIONS": "NSE_FO",             # NSE F&O (derivatives)
-            "SENSEX_OPTIONS_SCALPING": "IDX_I",  # Index for trend detection
-            "XAUUSD": "FOREXCFD",            # Forex (ONDA API)
-        }
-
-        symbol_map = {
-            "STOCKS": ["RELIANCE", "TCS", "INFY", "HDFC", "BAJAJ-AUTO"],
-            "SENSEX": ["SENSEX"],
-            "OPTIONS": ["NIFTY", "BANKNIFTY"],
-            "SENSEX_OPTIONS_SCALPING": ["SENSEX"],  # Uses SENSEX price for trend
-            "XAUUSD": ["XAUUSD"],
-        }
-
+    async def option_chain_refresher():
+        """Refresh real option chains sequentially; the client enforces Dhan limits."""
         while True:
+            for symbol, security_id in _OPTION_UNDERLYINGS.items():
+                try:
+                    result = await asyncio.to_thread(
+                        dhan_client.refresh_option_chain,
+                        symbol,
+                        security_id,
+                        "IDX_I",
+                    )
+                    if result is False or result is None:
+                        await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("Dhan option-chain refresh failed for %s", symbol)
+                    await asyncio.sleep(1)
+
+    async def live_market_feeder():
+        """Refresh provider data once per cycle and paper-trade only fresh quotes."""
+        while True:
+            db = SessionLocal()
             try:
-                db = SessionLocal()
+                dhan_refresh_ok = await asyncio.to_thread(
+                    dhan_client.refresh_quotes, _instruments_to_subscribe
+                )
+                try:
+                    xau_quote = await asyncio.to_thread(
+                        onda_client.get_live_data, "XAUUSD", "XAUUSD"
+                    )
+                except Exception:
+                    xau_quote = None
 
-                # Fetch live data for each symbol and send to agents
-                for agent_name, symbols in symbol_map.items():
+                indian_quotes = {}
+                if dhan_refresh_ok:
+                    for symbol in SYMBOL_TO_ID:
+                        quote = _fresh_indian_quote(symbol)
+                        if quote:
+                            quote = dict(quote)
+                            quote["symbol"] = symbol
+                            quote["volume"] = _volume_delta(symbol, quote)
+                            indian_quotes[symbol] = quote
+
+                if isinstance(xau_quote, dict):
+                    xau_quote = dict(xau_quote)
+                    xau_quote["symbol"] = "XAUUSD"
+                else:
+                    xau_quote = None
+
+                for agent_name, symbols in _AGENT_SYMBOLS.items():
+                    agent = agents_map[agent_name]
+                    symbol_statuses = []
                     for symbol in symbols:
+                        live_data = xau_quote if agent_name == "XAUUSD" else indian_quotes.get(symbol)
+                        open_trade = db.query(Trade).filter(
+                            Trade.agent == AgentName[agent_name],
+                            Trade.symbol == symbol,
+                            Trade.status == "OPEN",
+                        ).first()
+                        if open_trade is not None:
+                            symbol_statuses.append(
+                                _monitor_open_trade(db, open_trade, agent_name)
+                            )
+                            continue
+
+                        if (
+                            not isinstance(live_data, dict)
+                            or not quote_is_fresh(live_data)
+                            or not quote_has_timestamp(live_data)
+                        ):
+                            reason = (
+                                "Fresh OANDA data is unavailable"
+                                if agent_name == "XAUUSD"
+                                else "Fresh Dhan quote is unavailable or stale"
+                            )
+                            symbol_statuses.append(("WAITING_FOR_DATA", reason))
+                            continue
+
+                        live_data = dict(live_data)
+                        live_data["symbol"] = symbol
+
+                        if not settings.PAPER_TRADING_ENABLED:
+                            symbol_statuses.append((
+                                "PAPER_TRADING_DISABLED",
+                                "Paper entries are disabled; live order execution is never available",
+                            ))
+                            continue
+                        if not _market_hours_open(agent_name):
+                            symbol_statuses.append(("MARKET_CLOSED", "Outside the configured market session"))
+                            continue
+
                         try:
-                            # Get LIVE market data from DhanHQ (NSE for India, ONDA for XAUUSD)
-                            if agent_name == "XAUUSD":
-                                # ONDA API for forex
-                                live_data = onda_client.get_live_data(symbol, "FOREXCFD")
-                            else:
-                                # DhanHQ for NSE stocks and indices
-                                segment = agent_segments.get(agent_name, "E")
-                                security_id = SYMBOL_TO_ID.get(symbol)
-                                if security_id:
-                                    live_data = dhan_client.get_live_data(security_id, symbol, segment)
-                                else:
-                                    live_data = {}  # Unknown symbol
+                            signal = agent.analyze(live_data)
+                        except Exception:
+                            logger.warning("Agent analysis failed for %s/%s", agent_name, symbol)
+                            symbol_statuses.append(("ANALYSIS_ERROR", "Strategy analysis failed safely"))
+                            continue
 
-                            # Pass data to agent even if close=0 (race condition on startup)
-                            # Agent will naturally skip zero-price ticks in candle building
+                        history = _agent_history_status(agent_name, symbol)
+                        if signal.value == "HOLD":
+                            symbol_statuses.append((
+                                history.get("status", "WARMING_UP"),
+                                history.get("reason", "No trade signal"),
+                            ))
+                            continue
 
-                            agent = agents_map.get(agent_name)
-                            if not agent:
-                                continue
+                        option_signal_metadata = (
+                            agent.get_last_signal_metadata(symbol)
+                            if agent_name == "OPTIONS"
+                            else {}
+                        )
+                        if agent_name == "OPTIONS" and option_signal_metadata.get("tier") == "TIER3":
+                            agent.rollback_signal(symbol)
+                            symbol_statuses.append((
+                                "UNSUPPORTED_SETUP",
+                                "The strategy's two-leg straddle is not represented as a single paper trade",
+                            ))
+                            continue
 
-                            # Market hours check: skip analysis outside trading hours
-                            ist = pytz.timezone('Asia/Kolkata')
-                            utc = pytz.timezone('UTC')
-                            now_ist = datetime.now(ist)
-                            now_utc = datetime.now(utc)
-
-                            # NSE agents: 9:15 AM - 3:30 PM IST (weekdays only)
-                            nse_start = time(9, 15)
-                            nse_end = time(15, 30)
-                            is_nse_hours = now_ist.time() >= nse_start and now_ist.time() <= nse_end and now_ist.weekday() < 5
-
-                            # XAUUSD forex: 16:00 UTC - 23:00 UTC (4 PM - 11 PM UTC = 9:30 PM - 4:30 AM IST next day)
-                            xauusd_start = time(16, 0)
-                            xauusd_end = time(23, 0)
-                            is_xauusd_hours = xauusd_start <= now_utc.time() < xauusd_end
-
-
-                            # Skip if outside market hours
-                            if agent_name == "XAUUSD" and not is_xauusd_hours:
-                                continue
-                            elif agent_name != "XAUUSD" and not is_nse_hours:
-                                continue
-
-                            # Check if open position exists - CHECK BEFORE signal analysis (TP/SL must not be skipped)
-                            open_trade = db.query(Trade).filter(
-                                Trade.agent == AgentName[agent_name],
-                                Trade.symbol == symbol,
-                                Trade.status == "OPEN",
-                            ).first()
-
-                            # If position is open, check TP/SL FIRST (independent of signal)
-                            if open_trade is not None:
-                                current_price = live_data['close']
-                                should_close = False
-
-                                # Only check TP/SL if price is valid (not 0 or invalid data)
-                                if current_price > 0:
-                                    # Check take profit
-                                    if open_trade.take_profit and open_trade.take_profit > 0:
-                                        if open_trade.trade_type.value == "BUY" and current_price >= open_trade.take_profit:
-                                            should_close = True
-                                        elif open_trade.trade_type.value == "SELL" and current_price <= open_trade.take_profit:
-                                            should_close = True
-
-                                    # Check stop loss
-                                    if open_trade.stop_loss and open_trade.stop_loss > 0:
-                                        if open_trade.trade_type.value == "BUY" and current_price <= open_trade.stop_loss:
-                                            should_close = True
-                                        elif open_trade.trade_type.value == "SELL" and current_price >= open_trade.stop_loss:
-                                            should_close = True
-
-                                if should_close:
-                                    # Close trade immediately - preserve history
-                                    open_trade.exit_price = current_price
-                                    open_trade.pnl = calculate_net_pnl(
-                                        open_trade.entry_price,
-                                        open_trade.exit_price,
-                                        open_trade.quantity,
-                                        open_trade.trade_type.value,
-                                        open_trade.symbol
-                                    )
-                                    open_trade.status = "CLOSED"
-                                    open_trade.closed_at = datetime.utcnow()
-                                    print(f"[TP/SL CLOSE] {agent_name}/{symbol}: {open_trade.trade_type.value} @ {current_price:.3f} (TP: {open_trade.take_profit:.3f}, SL: {open_trade.stop_loss:.3f})", flush=True)
-                                    db.commit()
-                                continue  # Skip signal analysis - position is closed
-
-                            # Get signal only if no open position
+                        if agent_name in {"OPTIONS", "SENSEX_OPTIONS_SCALPING"}:
                             try:
-                                signal = agent.analyze(live_data)
-                            except Exception as analyze_err:
-                                print(f"[ERROR] {agent_name} analyze failed: {analyze_err}", flush=True)
+                                option_quote = dhan_client.select_atm_option(symbol, signal.value)
+                            except Exception:
+                                option_quote = None
+                            if not _option_quote_is_usable(option_quote):
+                                if agent_name == "OPTIONS":
+                                    agent.rollback_signal(symbol)
+                                symbol_statuses.append((
+                                    "WAITING_FOR_OPTION_QUOTE",
+                                    "No fresh valid real option bid/ask/LTP; no paper trade was created",
+                                ))
                                 continue
 
-                            print(f"[ANALYSIS] {agent_name} {signal.value}: {symbol} @ {live_data['close']}", flush=True)
-                            if signal.value == "HOLD":
+                            quantity = getattr(agent, "quantity", 1.0)
+                            stop_points = (
+                                getattr(agent, "sl_points", 50)
+                                if agent_name == "OPTIONS"
+                                else getattr(agent, "stop_loss_pips", 25)
+                            )
+                            target_points = (
+                                option_signal_metadata.get("target_points", getattr(agent, "tp_points_conservative", 100))
+                                if agent_name == "OPTIONS"
+                                else getattr(agent, "last_signal_target_points", getattr(agent, "take_profit_pips_min", 10))
+                            )
+                            fill = build_long_option_paper_entry(
+                                signal.value,
+                                option_quote,
+                                quantity,
+                                stop_points,
+                                target_points,
+                            )
+                            if not fill:
+                                if agent_name == "OPTIONS":
+                                    agent.rollback_signal(symbol)
+                                symbol_statuses.append((
+                                    "WAITING_FOR_OPTION_QUOTE",
+                                    "Option contract identity or fresh bid/ask was invalid",
+                                ))
                                 continue
 
-                            print(f"[SIGNAL] {agent_name} {signal.value}: {symbol} @ {live_data['close']}", flush=True)
+                            trade = Trade(
+                                agent=AgentName[agent_name],
+                                symbol=symbol,
+                                trade_type=TradeType.BUY,
+                                quantity=fill["quantity"],
+                                entry_price=fill["entry_price"],
+                                stop_loss=fill["stop_loss"],
+                                take_profit=fill["take_profit"],
+                                status="OPEN",
+                                option_strike=fill["option_strike"],
+                                option_price=fill["option_price"],
+                                data_source=fill["data_source"],
+                                entry_data_timestamp=fill["entry_data_timestamp"],
+                            )
+                            db.add(trade)
+                            try:
+                                db.commit()
+                            except Exception:
+                                db.rollback()
+                                if agent_name == "OPTIONS":
+                                    agent.rollback_signal(symbol)
+                                raise
+                            if agent_name == "SENSEX_OPTIONS_SCALPING":
+                                agent.log_trade(signal.value, fill["entry_price"])
+                            symbol_statuses.append((
+                                "PAPER_POSITION_OPEN",
+                                f"Long {fill['option_type']} entered at live ask; marked/exited at live bid",
+                            ))
+                            continue
 
-                            if open_trade is None:
-                                # No position open - enter on the signal
-                                entry_price = live_data['close']
+                        entry_price = (
+                            provider_side_price(live_data, signal.value)
+                            if agent_name == "XAUUSD"
+                            else live_data.get("close")
+                        )
+                        if not isinstance(entry_price, (int, float)) or entry_price <= 0:
+                            symbol_statuses.append(("WAITING_FOR_DATA", "Provider price is invalid"))
+                            continue
 
-                                # Calculate stop loss and take profit based on agent parameters
-                                agent = agents_map[agent_name]
-                                if agent_name == "XAUUSD":
-                                    sl_pips = agent.stop_loss_pips
-                                    tp_pips = agent.target_pips
-                                else:
-                                    sl_pips = getattr(agent, 'stop_loss_pips', 50)
-                                    tp_pips = getattr(agent, 'take_profit_pips', 100)
+                        if agent_name == "STOCKS":
+                            stop_loss, take_profit = agent.get_risk_levels(symbol)
+                            quantity = getattr(agent, "base_quantity", 1.0)
+                        else:
+                            stop_points = getattr(agent, "stop_loss_pips", None)
+                            target_points = getattr(agent, "target_pips", None)
+                            quantity = 100.0
+                            if not stop_points or not target_points:
+                                symbol_statuses.append(("UNSUPPORTED_SETUP", "Strategy has no valid paper risk levels"))
+                                continue
+                            if signal.value == "BUY":
+                                stop_loss = entry_price - stop_points
+                                take_profit = entry_price + target_points
+                            else:
+                                stop_loss = entry_price + stop_points
+                                take_profit = entry_price - target_points
 
-                                # Calculate TP/SL
-                                if signal.value == "BUY":
-                                    stop_loss_price = entry_price - sl_pips
-                                    take_profit_price = entry_price + tp_pips
-                                else:  # SELL
-                                    stop_loss_price = entry_price + sl_pips
-                                    take_profit_price = entry_price - tp_pips
+                        if (
+                            stop_loss is None
+                            or take_profit is None
+                            or stop_loss <= 0
+                            or take_profit <= 0
+                        ):
+                            symbol_statuses.append(("UNSUPPORTED_SETUP", "Strategy risk levels are invalid"))
+                            continue
 
-                                # Get quantity from agent (SENSEX_OPTIONS_SCALPING: 1000, STOCKS: 50, XAUUSD: 100, others: 1)
-                                if agent_name == "STOCKS":
-                                    qty = getattr(agent, 'base_quantity', 50.0)
-                                else:
-                                    qty = getattr(agent, 'quantity', 100.0 if agent_name == "XAUUSD" else 1.0)
+                        source = "OANDA" if agent_name == "XAUUSD" else "DHAN"
+                        trade = Trade(
+                            agent=AgentName[agent_name],
+                            symbol=symbol,
+                            trade_type=TradeType[signal.value],
+                            quantity=quantity,
+                            entry_price=entry_price,
+                            stop_loss=stop_loss,
+                            take_profit=take_profit,
+                            status="OPEN",
+                            data_source=source,
+                            entry_data_timestamp=live_data.get("timestamp"),
+                        )
+                        db.add(trade)
+                        try:
+                            db.commit()
+                        except Exception:
+                            db.rollback()
+                            raise
+                        symbol_statuses.append(("PAPER_POSITION_OPEN", f"{source} paper entry created"))
 
-                                # Get option details for SENSEX_OPTIONS_SCALPING
-                                option_strike = None
-                                option_price = None
-                                if agent_name == "SENSEX_OPTIONS_SCALPING":
-                                    option_strike = getattr(agent, 'current_atm_strike', None)
-                                    option_price = getattr(agent, 'last_option_premium', None)  # Actual option premium, not index price
+                    if symbol_statuses:
+                        statuses = [item[0] for item in symbol_statuses]
+                        reasons = list(dict.fromkeys(item[1] for item in symbol_statuses))
+                        if "PAPER_POSITION_OPEN" in statuses:
+                            status = "PAPER_POSITION_OPEN"
+                        elif "TRADE_CLOSED" in statuses:
+                            status = "TRADE_CLOSED"
+                        elif all(item == "WARMING_UP" for item in statuses):
+                            status = "WARMING_UP"
+                        elif len(set(statuses)) == 1:
+                            status = statuses[0]
+                        else:
+                            status = "PARTIAL"
+                        _AGENT_RUNTIME_STATUS[agent_name] = {
+                            "status": status,
+                            "reason": "; ".join(reasons),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
 
-                                trade = Trade(
-                                    agent=AgentName[agent_name],
-                                    symbol=symbol,
-                                    trade_type=TradeType[signal.value],
-                                    quantity=qty,
-                                    entry_price=entry_price,
-                                    stop_loss=stop_loss_price,
-                                    take_profit=take_profit_price,
-                                    status="OPEN",
-                                    option_strike=option_strike,
-                                    option_price=option_price
-                                )
-                                db.add(trade)
-                        except Exception as e:
-                            logger.error(f"[ERROR] {agent_name}/{symbol} feeder step failed: {e}", exc_info=True)
-
-                db.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("Live paper-trading cycle failed safely")
+            finally:
                 db.close()
-                await asyncio.sleep(5)  # Poll every 5 seconds
+            await asyncio.sleep(5)
 
-            except Exception as e:
-                logger.error(f"Market feeder error: {e}", exc_info=True)
-                await asyncio.sleep(5)
-
-    # Start live market feeder in background
     ticker_task = asyncio.create_task(live_market_feeder())
+    option_chain_task = asyncio.create_task(option_chain_refresher())
 
-    # Initialize and start autonomous optimizer (24/7 self-learning until 90%+)
-    db = SessionLocal()
-    autonomous_optimizer = AutonomousOptimizer(
-        boss_agent, agents_map, learning_engine, backtest_engine,
-        strategy_optimizer, market_researcher, performance_monitor, db
-    )
-
-    # Start autonomous loop (runs until 90%+ achieved)
-    optimizer_task = asyncio.create_task(autonomous_optimizer.start_autonomous_improvement_loop())
-
-    print("\n" + "="*80)
-    print("AUTONOMOUS MODE ACTIVATED")
-    print("   Boss Agent: Full Control")
-    print("   Optimizer: Running 24/7 until 90%+ achieved")
-    print("   No manual intervention needed")
-    print("="*80 + "\n")
+    optimizer_task = None
+    try:
+        autonomous_optimizer = AutonomousOptimizer(
+            boss_agent=boss_agent,
+            agents_map=agents_map,
+            learning_engine=learning_engine,
+            backtest_engine=backtest_engine,
+            strategy_optimizer=strategy_optimizer,
+            market_researcher=market_researcher,
+            performance_monitor=performance_monitor,
+            db_session=SessionLocal,
+        )
+        optimizer_task = asyncio.create_task(
+            autonomous_optimizer.start_autonomous_improvement_loop()
+        )
+    except Exception:
+        autonomous_optimizer = None
+        logger.warning("Continuous verified-performance monitor could not start")
+    print("Live-provider paper agents started; live order execution is disabled.", flush=True)
 
     yield
 
-    # Cleanup
-    ticker_task.cancel()
-    try:
-        await ticker_task
-    except asyncio.CancelledError:
-        pass
-
-    print("[OK] Shutdown complete")
+    if autonomous_optimizer is not None:
+        autonomous_optimizer.stop()
+    for task in (ticker_task, option_chain_task, optimizer_task):
+        if task is not None:
+            task.cancel()
+    for task in (ticker_task, option_chain_task, optimizer_task):
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    for client in (dhan_client, onda_client):
+        close = getattr(client, "close", None)
+        if callable(close):
+            try:
+                await asyncio.to_thread(close)
+            except Exception:
+                logger.warning("Provider client cleanup failed")
+    print("[OK] Shutdown complete", flush=True)
 
 app = FastAPI(title="Jarvis 2 Trading Platform", lifespan=lifespan)
 
@@ -470,113 +807,150 @@ async def health():
 
 @app.get("/debug/feed")
 async def debug_feed():
+    dhan_status, oanda_status = _provider_status()
     return {
-        "dhan_subscribed": dhan_client.subscribed,
-        "dhan_latest_prices": dhan_client.latest_prices,
-        "dhan_last_error": getattr(dhan_client, "last_error", None),
-        "dhan_last_traceback": getattr(dhan_client, "last_traceback", None),
+        "mode": "PAPER",
+        "live_orders_enabled": False,
+        "dhan": dhan_status,
+        "oanda": oanda_status,
         "instruments_requested": _instruments_to_subscribe,
     }
 
 @app.get("/portfolio")
 async def get_portfolio(db: Session = Depends(get_db)):
+    trades = db.query(Trade).all()
+    closed_metrics = verified_closed_trade_metrics(trades)
+    open_trades = [trade for trade in trades if trade.status == "OPEN"]
+    positions = {}
+    realized_pnl_by_currency = {"INR": 0.0, "USD": 0.0}
+    unrealized_pnl_by_currency = {"INR": 0.0, "USD": 0.0}
+    for currency in realized_pnl_by_currency:
+        currency_trades = [
+            trade
+            for trade in trades
+            if ("USD" if trade.agent.value == "XAUUSD" else "INR") == currency
+        ]
+        realized_pnl_by_currency[currency] = verified_closed_trade_metrics(
+            currency_trades
+        )["total_pnl"]
+    for trade in open_trades:
+        current_price, _ = _cached_trade_mark(trade)
+        currency = "USD" if trade.agent.value == "XAUUSD" else "INR"
+        pnl = None
+        if current_price is not None:
+            if trade.trade_type.value == "BUY":
+                pnl = (current_price - trade.entry_price) * trade.quantity
+            else:
+                pnl = (trade.entry_price - current_price) * trade.quantity
+            unrealized_pnl_by_currency[currency] += pnl
+        positions[str(trade.id)] = {
+            "symbol": trade.symbol,
+            "agent": trade.agent.value,
+            "currency": currency,
+            "quantity": trade.quantity,
+            "entry_price": trade.entry_price,
+            "current_price": current_price,
+            "pnl": round(pnl, 2),
+            "data_source": trade.data_source,
+        }
+    realized_pnl = realized_pnl_by_currency["INR"]
+    unrealized_pnl = unrealized_pnl_by_currency["INR"]
+    total_pnl_by_currency = {
+        currency: round(
+            realized_pnl_by_currency[currency]
+            + unrealized_pnl_by_currency[currency],
+            2,
+        )
+        for currency in realized_pnl_by_currency
+    }
+    agent_performance = {}
+    for agent_name in agents_map:
+        agent_trades = [trade for trade in trades if trade.agent == AgentName[agent_name]]
+        agent_performance[agent_name] = {
+            **verified_closed_trade_metrics(agent_trades),
+            "currency": "USD" if agent_name == "XAUUSD" else "INR",
+            "status": _AGENT_RUNTIME_STATUS.get(agent_name, {}).get("status", "WAITING_FOR_DATA"),
+            "reason": _AGENT_RUNTIME_STATUS.get(agent_name, {}).get("reason", ""),
+        }
+    portfolio_state.update({
+        "total_pnl": round(realized_pnl + unrealized_pnl, 2),
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "net_worth": round(settings.INITIAL_CAPITAL + realized_pnl + unrealized_pnl, 2),
+        "currency": "INR",
+        "realized_pnl_by_currency": realized_pnl_by_currency,
+        "unrealized_pnl_by_currency": {
+            currency: round(value, 2)
+            for currency, value in unrealized_pnl_by_currency.items()
+        },
+        "total_pnl_by_currency": total_pnl_by_currency,
+        "consolidation_note": "INR and USD P&L are reported separately; no currency conversion is assumed.",
+        "positions": positions,
+        "active_trades": len(open_trades),
+        "agent_performance": agent_performance,
+        "mode": "PAPER",
+        "live_orders_enabled": False,
+        "metrics_basis": closed_metrics["metrics_basis"],
+    })
     return portfolio_state
 
 @app.get("/positions")
 async def get_positions(db: Session = Depends(get_db)):
-    positions = db.query(Position).order_by(Position.updated_at.desc()).all()
-    return {
-        "positions": [
-            {
-                "symbol": position.symbol,
-                "agent": position.agent.value,
-                "qty": position.quantity,
-                "entryPrice": position.avg_price,
-                "currentPrice": position.current_price,
-                "pnl": position.unrealized_pnl or 0.0,
-                "pnlPercent": (
-                    round(
-                        position.unrealized_pnl
-                        / abs(position.avg_price * position.quantity)
-                        * 100,
-                        2,
-                    )
-                    if position.avg_price and position.quantity
-                    else 0.0
-                ),
-            }
-            for position in positions
-        ]
-    }
+    positions = []
+    open_trades = db.query(Trade).filter(Trade.status == "OPEN").order_by(Trade.created_at.desc()).all()
+    for trade in open_trades:
+        current_price, _ = _cached_trade_mark(trade)
+        pnl = None
+        if current_price is not None:
+            if trade.trade_type.value == "BUY":
+                pnl = (current_price - trade.entry_price) * trade.quantity
+            else:
+                pnl = (trade.entry_price - current_price) * trade.quantity
+        positions.append({
+            "symbol": trade.symbol,
+            "agent": trade.agent.value,
+            "currency": "USD" if trade.agent.value == "XAUUSD" else "INR",
+            "qty": trade.quantity,
+            "entryPrice": trade.entry_price,
+            "currentPrice": current_price,
+            "pnl": pnl,
+            "pnlPercent": (
+                round(pnl / abs(trade.entry_price * trade.quantity) * 100, 2)
+                if pnl is not None and trade.entry_price and trade.quantity
+                else None
+            ),
+            "data_source": trade.data_source,
+        })
+    return {"positions": positions}
 
 @app.get("/agents/performance")
 async def get_agents_performance(db: Session = Depends(get_db)):
     result = {}
 
-    # Return all agents with their current status from portfolio_state
     for agent_name in agents_map.keys():
-        agent_status = portfolio_state["agent_performance"].get(agent_name, {})
-
+        trades = db.query(Trade).filter(Trade.agent == AgentName[agent_name]).all()
+        metrics = verified_closed_trade_metrics(trades)
+        runtime = _AGENT_RUNTIME_STATUS.get(agent_name, {})
         result[agent_name] = {
-            "total_trades": agent_status.get("total_trades", 0),
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "win_rate": agent_status.get("win_rate", 0.0),
-            "total_pnl": agent_status.get("total_pnl", 0.0),
-            "confidence": 0.5,
-            "status": agent_status.get("status", "IDLE"),
-            "analyzing": agent_status.get("analyzing", False),
+            **metrics,
+            "currency": "USD" if agent_name == "XAUUSD" else "INR",
+            "confidence": round(metrics["win_rate"] / 100, 4) if metrics["total_trades"] else 0.0,
+            "status": runtime.get("status", "WAITING_FOR_DATA"),
+            "reason": runtime.get("reason", "Waiting for live market data"),
+            "analyzing": runtime.get("status") in {"RUNNING", "PAPER_POSITION_OPEN"},
+            "target_win_rate": 90,
+            "target_is_aspirational": True,
+            "guaranteed": False,
         }
 
     return result
 
 @app.post("/market-data")
-async def ingest_market_data(
-    symbol: str,
-    open_price: float,
-    high: float,
-    low: float,
-    close: float,
-    volume: float,
-    db: Session = Depends(get_db)
-):
-    market_data = MarketData(
-        symbol=symbol,
-        timestamp=datetime.utcnow(),
-        open_price=open_price,
-        high_price=high,
-        low_price=low,
-        close_price=close,
-        volume=volume
+async def ingest_market_data():
+    raise HTTPException(
+        status_code=403,
+        detail="Disabled: market data is accepted only from configured read-only providers.",
     )
-    db.add(market_data)
-    db.commit()
-
-    data_dict = {
-        "symbol": symbol,
-        "open": open_price,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": volume
-    }
-
-    for agent_name, agent in agents_map.items():
-        if symbol in agent.get_symbols():
-            signal = agent.analyze(data_dict)
-            if signal.value != "HOLD":
-                trade = Trade(
-                    agent=AgentName[agent_name],
-                    symbol=symbol,
-                    trade_type=TradeType[signal.value],
-                    quantity=1.0,
-                    entry_price=close,
-                    status="OPEN"
-                )
-                db.add(trade)
-
-    db.commit()
-    return {"status": "ingested", "symbol": symbol}
 
 @app.get("/trades")
 async def get_trades(agent: str = None, db: Session = Depends(get_db)):
@@ -587,63 +961,21 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
 
     result = []
     for t in trades:
-        if t.agent.value == "SENSEX" and t.status == "OPEN":
-            import sys
-            print(f"[SENSEX DEBUG] Processing trade: agent={t.agent.value}, status={t.status}, entry={t.entry_price}", file=sys.stderr, flush=True)
-        # Get current price for open positions
-        current_price = t.exit_price if t.status == "CLOSED" else 0
+        contract = parse_option_contract(t.option_strike)
+        current_price = t.exit_price if t.status == "CLOSED" else None
         if t.status == "OPEN":
-            try:
-                if t.agent.value == "XAUUSD":
-                    # XAUUSD uses OANDA API
-                    live_data = onda_client.get_live_data(t.symbol)
-                    current_price = live_data.get("close", 0)
-                else:
-                    # Indian agents use DhanHQ live prices
-                    security_id = SYMBOL_TO_ID.get(t.symbol)
-                    if security_id and dhan_client and dhan_client.latest_prices:
-                        price_data = dhan_client.latest_prices.get(str(security_id), {})
-                        current_price = price_data.get("close", 0)
-                        if t.agent.value == "SENSEX":
-                            import sys
-                            print(f"[SENSEX PRICE] ID={security_id}, price_data={price_data}, current_price={current_price}", file=sys.stderr, flush=True)
-            except Exception as e:
-                import sys
-                print(f"[ERROR getting price] {t.symbol}: {str(e)}", file=sys.stderr, flush=True)
-
-        # Calculate P&L: for OPEN trades use current_price, for CLOSED use exit_price
-        pnl = t.pnl
-        if t.status == "OPEN" and current_price > 0:
-            # Unrealized P&L
+            current_price, _ = _cached_trade_mark(t)
+        pnl = t.pnl if t.pnl is not None else 0.0
+        if t.status == "OPEN" and current_price is not None:
             if t.trade_type.value == "BUY":
                 pnl = (current_price - t.entry_price) * t.quantity
-            else:  # SELL
+            else:
                 pnl = (t.entry_price - current_price) * t.quantity
-
-        # P&L percent
-        pnl_pct = 0.0
-        if t.entry_price and t.quantity:
-            pnl_pct = (pnl / (t.entry_price * t.quantity)) * 100
-
-        # For trades missing TP/SL, calculate from agent pips
-        stop_loss_display = t.stop_loss
-        take_profit_display = t.take_profit
-        if (stop_loss_display == 0 or take_profit_display == 0) and t.entry_price > 0:
-            agent = agents_map.get(t.agent.value)
-            if agent and hasattr(agent, 'stop_loss_pips') and hasattr(agent, 'take_profit_pips'):
-                if t.trade_type.value == "BUY":
-                    stop_loss_display = t.entry_price - agent.stop_loss_pips
-                    take_profit_display = t.entry_price + agent.take_profit_pips
-                else:  # SELL
-                    stop_loss_display = t.entry_price + agent.stop_loss_pips
-                    take_profit_display = t.entry_price - agent.take_profit_pips
-
-        # TEST: Hardcode for SENSEX to verify code executes
-        if t.agent.value == "SENSEX" and t.entry_price == 74186.68:
-            stop_loss_display = 99999.0
-            take_profit_display = 88888.0
-
-        # Determine currency based on agent
+        pnl_pct = (
+            (pnl / (t.entry_price * t.quantity)) * 100
+            if t.entry_price and t.quantity
+            else 0.0
+        )
         currency = "USD" if t.agent.value == "XAUUSD" else "INR"
 
         result.append({
@@ -651,17 +983,27 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
             "agent": t.agent.value,
             "symbol": t.symbol,
             "type": t.trade_type.value,
-            "signal": t.trade_type.value,  # Alias for dashboard
+            "signal": (
+                "SELL" if contract and contract["option_type"] == "PE"
+                else "BUY" if contract
+                else t.trade_type.value
+            ),
+            "option_strike": t.option_strike,
+            "option_type": contract["option_type"] if contract else None,
+            "option_expiry": contract["expiry"] if contract else None,
             "quantity": t.quantity,
             "entry_price": t.entry_price,
             "exit_price": t.exit_price,
             "current_price": current_price,
             "pnl": pnl,
             "pnl_percent": pnl_pct,
-            "currency": currency,  # USD for XAUUSD, INR for others
+            "currency": currency,
             "status": t.status,
-            "stop_loss": stop_loss_display,
-            "take_profit": take_profit_display,
+            "stop_loss": t.stop_loss,
+            "take_profit": t.take_profit,
+            "data_source": t.data_source,
+            "entry_data_timestamp": t.entry_data_timestamp,
+            "exit_data_timestamp": t.exit_data_timestamp,
             "entry_time": t.created_at.isoformat(),
             "exit_time": t.closed_at.isoformat() if t.closed_at else None,
             "created_at": t.created_at.isoformat(),
@@ -671,82 +1013,91 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
 
 @app.get("/learning/analysis/{agent}")
 async def get_agent_analysis(agent: str, db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter(Trade.agent == AgentName[agent]).all()
-    trade_data = [{"pnl": t.pnl, "status": t.status} for t in trades[-50:]]
-
-    analysis = learning_engine.analyze_daily_performance(agent, trade_data)
-    confidence = learning_engine.calculate_confidence(agent, trade_data)
-
-    market_data = db.query(MarketData).order_by(MarketData.timestamp.desc()).limit(20).all()
-    market_conditions = market_researcher.analyze_market_conditions([
-        {"close": m.close_price, "volume": m.volume, "high": m.high_price, "low": m.low_price}
-        for m in market_data
-    ])
-
-    suggestions = learning_engine.suggest_strategy_adjustments(agent, market_conditions)
+    trades = [
+        trade
+        for trade in db.query(Trade).filter(Trade.agent == AgentName[agent]).all()
+        if is_verified_closed_trade(trade)
+    ]
+    metrics = verified_closed_trade_metrics(trades)
 
     return {
         "agent": agent,
-        "analysis": analysis,
-        "confidence": confidence,
-        "market_conditions": market_conditions,
-        "suggestions": suggestions,
+        "analysis": {
+            **metrics,
+            "currency": "USD" if agent == "XAUUSD" else "INR",
+            "status": "measurement_only",
+            "strategy_recommendations": [],
+            "reason": (
+                "Strategy recommendations require genuine historical market data "
+                "and validated backtests."
+            ),
+        },
+        "confidence": (
+            round(metrics["win_rate"] / 100, 4)
+            if metrics["total_trades"]
+            else None
+        ),
+        "market_conditions": None,
+        "suggestions": [],
+        "market_history_status": "unavailable_unverified_legacy_data_excluded",
+        "metrics_basis": "closed live-provider-price paper trades only",
+        "target_win_rate_is_aspirational": True,
+        "win_rate_guaranteed": False,
     }
 
 @app.get("/learning/strategy/{agent}")
 async def get_optimized_strategy(agent: str, db: Session = Depends(get_db)):
     trades = db.query(Trade).filter(Trade.agent == AgentName[agent]).all()
-    recent_performance = [{"pnl": t.pnl} for t in trades[-30:]]
-
-    market_data = db.query(MarketData).order_by(MarketData.timestamp.desc()).limit(50).all()
-    market_conditions = market_researcher.analyze_market_conditions([
-        {"close": m.close_price, "volume": m.volume, "high": m.high_price, "low": m.low_price}
-        for m in market_data
-    ])
-
-    optimized_params = strategy_optimizer.optimize_for_conditions(agent, market_conditions, recent_performance)
-
+    verified_count = verified_closed_trade_metrics(trades)["total_trades"]
     return {
         "agent": agent,
-        "optimized_parameters": optimized_params,
-        "market_conditions": market_conditions,
-        "optimization_timestamp": datetime.utcnow().isoformat(),
+        "status": "optimization_paused",
+        "optimized_parameters": None,
+        "strategy_changed": False,
+        "verified_closed_trades": verified_count,
+        "reason": (
+            "Automatic strategy changes require genuine historical market data "
+            "and a validated backtest; neither is currently established."
+        ),
     }
 
 @app.get("/learning/performance")
 async def get_performance_summary(db: Session = Depends(get_db)):
     summary = {}
-    for agent_name in ["STOCKS", "SENSEX", "OPTIONS", "CANDLE", "XAUUSD"]:
+    for agent_name in agents_map:
         trades = db.query(Trade).filter(Trade.agent == AgentName[agent_name]).all()
-        trade_data = [{"pnl": t.pnl, "status": t.status} for t in trades]
-        perf = performance_monitor.track_agent_performance(agent_name, trade_data)
-        summary[agent_name] = perf
+        summary[agent_name] = {
+            **verified_closed_trade_metrics(trades),
+            "currency": "USD" if agent_name == "XAUUSD" else "INR",
+            "status": _AGENT_RUNTIME_STATUS.get(agent_name, {}).get("status", "WAITING_FOR_DATA"),
+        }
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "agents": summary,
         "target_win_rate": 90,
+        "target_is_aspirational": True,
+        "guaranteed": False,
+        "metrics_basis": "closed live-provider-price paper trades only",
     }
 
 @app.get("/learning/improvement-plan/{agent}")
 async def get_improvement_plan(agent: str, db: Session = Depends(get_db)):
-    plan = performance_monitor.get_improvement_plan(agent)
-
-    trades = db.query(Trade).filter(Trade.agent == AgentName[agent]).all()
-    recent_trades = [{"pnl": t.pnl} for t in trades[-30:]]
-
-    market_data = db.query(MarketData).order_by(MarketData.timestamp.desc()).limit(20).all()
-    market_conditions = market_researcher.analyze_market_conditions([
-        {"close": m.close_price, "volume": m.volume, "high": m.high_price, "low": m.low_price}
-        for m in market_data
-    ])
-
-    opportunities = market_researcher.identify_opportunities(agent, market_conditions, recent_trades)
-
+    trades = [
+        trade
+        for trade in db.query(Trade).filter(Trade.agent == AgentName[agent]).all()
+        if is_verified_closed_trade(trade)
+    ]
     return {
         "agent": agent,
-        "improvement_plan": plan,
-        "opportunities": opportunities,
+        "status": "insufficient_validated_history",
+        "improvement_plan": [],
+        "opportunities": [],
+        "verified_closed_trades": len(trades),
+        "reason": (
+            "No strategy upgrades are proposed until genuine historical data "
+            "and validated backtests are available."
+        ),
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -762,23 +1113,52 @@ async def boss_daily_standup(db: Session = Depends(get_db)):
 async def get_team_consensus(db: Session = Depends(get_db)):
     if not boss_agent:
         return {"status": "boss_agent_not_initialized"}
-    all_trades = db.query(Trade).all()
-    market_data = db.query(MarketData).order_by(MarketData.timestamp.desc()).limit(20).all()
-    market_conditions = market_researcher.analyze_market_conditions([
-        {"close": m.close_price, "volume": m.volume, "high": m.high_price, "low": m.low_price}
-        for m in market_data
-    ])
-    consensus = boss_agent.build_team_consensus(market_conditions, [{"agent": t.agent.value, "pnl": t.pnl} for t in all_trades])
-    return consensus
+    all_trades = [
+        trade
+        for trade in db.query(Trade).all()
+        if is_verified_closed_trade(trade)
+    ]
+    return {
+        "status": "consensus_paused",
+        "consensus": "HOLD",
+        "confidence": None,
+        "verified_closed_trades": len(all_trades),
+        "metrics_basis": "closed live-provider-price paper trades only",
+        "reason": (
+            "Team consensus is not inferred from unverified legacy market history; "
+            "it requires genuine historical data and validated strategy evaluation."
+        ),
+    }
 
 @app.get("/boss/leaderboard")
 async def get_agent_leaderboard(db: Session = Depends(get_db)):
     if not boss_agent:
-        return {"leaderboard": []}
-    metrics = db.query(AgentMetrics).all()
-    agent_metrics = {m.agent.value: {"win_rate": m.win_rate, "total_pnl": m.total_pnl, "profit_factor": 0.75} for m in metrics}
+        return {"status": "boss_agent_not_initialized", "leaderboard": []}
+    agent_metrics = {}
+    for agent_name in agents_map:
+        trades = db.query(Trade).filter(Trade.agent == AgentName[agent_name]).all()
+        metrics = verified_closed_trade_metrics(trades)
+        agent_metrics[agent_name] = {
+            "win_rate": metrics["win_rate"],
+            "total_pnl": metrics["total_pnl"],
+            "total_trades": metrics["total_trades"],
+            "currency": "USD" if agent_name == "XAUUSD" else "INR",
+            "metrics_basis": metrics["metrics_basis"],
+        }
+    if not any(metrics["total_trades"] for metrics in agent_metrics.values()):
+        return {
+            "status": "insufficient_verified_live_paper_data",
+            "leaderboard": [],
+            "metrics_basis": "closed live-provider-price paper trades only",
+        }
     leaderboard = boss_agent.update_performance_leaderboard(agent_metrics)
-    return {"leaderboard": leaderboard}
+    return {
+        "status": "measured",
+        "leaderboard": leaderboard,
+        "metrics_basis": "closed live-provider-price paper trades only",
+        "target_win_rate_is_aspirational": True,
+        "win_rate_guaranteed": False,
+    }
 
 @app.get("/boss/report")
 async def get_daily_report():
@@ -798,24 +1178,55 @@ async def get_team_health():
 async def run_agent_backtest(agent: str, days: int = 30, db: Session = Depends(get_db)):
     if agent not in agents_map:
         return {"error": f"Agent {agent} not found"}
-    market_data = db.query(MarketData).order_by(MarketData.timestamp.desc()).limit(days * 20).all()
-    data = [{"close": m.close_price, "high": m.high_price, "low": m.low_price, "volume": m.volume} for m in reversed(market_data)]
-    if not data:
-        return {"status": "insufficient_data"}
-    result = backtest_engine.run_backtest(agents_map[agent], data)
     return {
         "agent": agent,
-        "backtest_period": f"last_{days}_days",
-        "total_trades": result.total_trades,
-        "win_rate": result.win_rate,
-        "total_pnl": result.total_pnl,
-        "profit_factor": result.profit_factor,
-        "max_drawdown": result.max_drawdown,
+        "requested_period_days": days,
+        "status": "unavailable_until_verified_history",
+        "total_trades": None,
+        "win_rate": None,
+        "total_pnl": None,
+        "counted_toward_live_target": False,
+        "strategy_changed": False,
+        "reason": (
+            "Legacy market-data rows have no verified provider provenance; "
+            "backtesting and strategy changes require genuine historical data "
+            "and a validated evaluation."
+        ),
     }
 
 @app.get("/data/market-snapshot")
 async def get_market_snapshot():
-    return dhan_client.get_market_snapshot()
+    snapshot = dhan_client.get_market_snapshot()
+    prices = snapshot.setdefault("prices", {})
+    cached_xau = getattr(onda_client, "latest_prices", {}).get("XAUUSD")
+    if isinstance(cached_xau, dict) and quote_is_fresh(cached_xau):
+        prices["XAUUSD"] = dict(cached_xau)
+    return snapshot
+
+
+@app.get("/market/status")
+async def get_market_status():
+    dhan_status, oanda_status = _provider_status()
+    return {
+        "mode": "PAPER",
+        "live_orders_enabled": False,
+        "paper_trading_enabled": bool(settings.PAPER_TRADING_ENABLED),
+        "win_rate_target": 90,
+        "win_rate_target_aspirational": True,
+        "win_rate_guaranteed": False,
+        "metrics_basis": "closed live-provider-price paper trades only",
+        "dhan": dhan_status,
+        "oanda": oanda_status,
+        "performance_monitor": (
+            autonomous_optimizer.get_status()
+            if autonomous_optimizer is not None
+            else {"status": "unavailable"}
+        ),
+        "agents": {
+            name: dict(status)
+            for name, status in _AGENT_RUNTIME_STATUS.items()
+        },
+    }
 
 @app.get("/optimizer/status")
 async def get_optimizer_status():
@@ -833,15 +1244,11 @@ async def get_optimizer_log(limit: int = 50):
 @app.get("/optimizer/progress")
 async def get_optimizer_progress():
     if not autonomous_optimizer:
-        return {"progress": None}
-
-    return {
-        "is_running": autonomous_optimizer.is_running,
-        "cycle_count": autonomous_optimizer.cycle_count,
-        "target_hit": autonomous_optimizer.target_hit,
-        "target_percent": 90,
-        "message": "Running 24/7 until 90%+ achieved" if not autonomous_optimizer.target_hit else "[OK] TARGET ACHIEVED!"
-    }
+        return {
+            "status": "not_initialized",
+            "reason": "Verified closed-trade monitor is unavailable",
+        }
+    return autonomous_optimizer.get_status()
 
 class ConnectionManager:
     def __init__(self):

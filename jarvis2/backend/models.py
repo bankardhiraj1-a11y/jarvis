@@ -34,6 +34,9 @@ class Trade(Base):
     closed_at = Column(DateTime, nullable=True)
     option_strike = Column(String(20), nullable=True)
     option_price = Column(Float, nullable=True)
+    data_source = Column(String(16), nullable=True)
+    entry_data_timestamp = Column(String(40), nullable=True)
+    exit_data_timestamp = Column(String(40), nullable=True)
 
 class Position(Base):
     __tablename__ = "positions"

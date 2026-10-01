@@ -7,13 +7,17 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     DEBUG: bool = True
     SECRET_KEY: str = "dev-secret-key-change-in-production"
-    CORS_ORIGINS: list = ["*"]
+    CORS_ORIGINS: list = []
 
     # DhanHQ Integration
     DHAN_CLIENT_ID: str = ""
     DHAN_ACCESS_TOKEN: str = ""
 
-    # ONDA Integration (Optional)
+    # OANDA market data only (no order execution)
+    OANDA_ACCESS_TOKEN: str = ""
+    OANDA_ACCOUNT_ID: str = ""
+    OANDA_ENVIRONMENT: str = "practice"
+    # Legacy names retained for compatibility, never sent to the browser.
     ONDA_API_KEY: str = ""
     ONDA_ACCESS_TOKEN: str = ""
 

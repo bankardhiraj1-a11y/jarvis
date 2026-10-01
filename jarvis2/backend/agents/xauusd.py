@@ -7,21 +7,17 @@ class XAUUSDAgent(BaseAgent):
         super().__init__("XAUUSD")
         self.symbols = ["XAUUSD"]
 
-        # XAUUSD_SWING Strategy Parameters - 90%+ Win Rate
+        # XAUUSD swing-strategy parameters; the target win rate is aspirational.
         self.lot_size = 1.00  # 100 oz per trade (1 lot)
         self.target_pips = 5.00  # $5 take profit per oz
-        self.stop_loss_pips = 1.50  # Tight $1.50 stop loss for 90% WR (vs 2.50)
+        self.stop_loss_pips = 1.50  # $1.50 stop loss per oz; outcomes are not guaranteed
         self.max_trades_per_day = 3
         self.risk_per_trade = 150.00  # $150 max risk per trade (tighter SL)
 
-        # 90%+ Win Rate Filters
+        # Selective-entry filters; they do not guarantee a win rate.
         self.min_ema_separation = 1.0  # Require strong EMA separation for signal
         self.signal_confirmation_count = 2  # Need 2 consecutive valid signals
         self.confirmation_buffer = 0.5  # Price must be 0.5oz past EMA for confirmation
-
-        # Price bounds (updated for actual broker prices ~4355)
-        self.min_price = 4000
-        self.max_price = 4500
 
         # Entry throttle
         self.last_entry_time = 0
@@ -37,12 +33,12 @@ class XAUUSDAgent(BaseAgent):
 
     def analyze(self, market_data: Dict) -> Signal:
         """
-        XAUUSD Swing Strategy - 90%+ Win Rate (REAL DATA ONLY)
+        XAUUSD swing strategy (REAL DATA ONLY; outcomes are not guaranteed)
         Entry: Selective EMA 12/26 crossover with confirmation
         Filters: Strong separation + price confirmation + timing
         Lot: 1.0 oz (100 oz) per trade
-        TP: $5.00/oz | SL: $1.50/oz (tight for 90% WR)
-        Target: 90%+ win rate from REAL signals only
+        TP: $5.00/oz | SL: $1.50/oz
+        90% win-rate objective is aspirational; no outcome is guaranteed.
 
         NO FAKE TRADES - ONLY LIVE OANDA DATA
         """
@@ -52,7 +48,7 @@ class XAUUSDAgent(BaseAgent):
 
         close = market_data.get("close", 0)
 
-        if close == 0 or not (self.min_price <= close <= self.max_price):
+        if close <= 0:
             return Signal.HOLD
 
         # Initialize EMAs
@@ -76,7 +72,7 @@ class XAUUSDAgent(BaseAgent):
         if self.open_trade_count >= self.max_trades_per_day:
             return Signal.HOLD
 
-        # 90%+ Win Rate Filters - SELECTIVE ENTRY ONLY
+        # Selective entry rules only; no win-rate guarantee.
         ema_separation = abs(self.ema_12 - self.ema_26)
 
         # Require strong EMA separation for signal validity

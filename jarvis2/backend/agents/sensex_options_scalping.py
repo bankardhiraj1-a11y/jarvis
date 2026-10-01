@@ -44,12 +44,8 @@ class SensexOptionsScalpingAgent(BaseAgent):
         self.ist = pytz.timezone('Asia/Kolkata')
         self.last_closed_candle = None  # Store last completed candle for breakout comparison
 
-        # Option strike tracking
-        self.current_atm_strike = None
-        self.last_option_price = None
-        self.last_option_premium = None  # Track actual option premium
-        self.option_strike_interval = 100  # SENSEX options are in 100-point intervals
-        self.implied_volatility = 0.20  # Default IV 20% for SENSEX options
+        # Premium data is supplied only by the live Dhan option-chain feed.
+        self.last_signal_target_points = self.take_profit_pips_min
 
         # Trade limiting (max 2-3 per day)
         self.max_trades_per_day = 3
@@ -61,40 +57,19 @@ class SensexOptionsScalpingAgent(BaseAgent):
     def get_symbols(self) -> List[str]:
         return self.symbols
 
-    def calculate_atm_strike(self, price: float) -> str:
-        """Calculate ATM strike (nearest 100-point strike)"""
-        strike = (round(price / self.option_strike_interval) * self.option_strike_interval)
-        return f"{int(strike)}"
-
-    def calculate_option_premium(self, strike: float, current_price: float, is_put: bool = True) -> float:
-        """
-        Simplified option premium calculation using Greeks approximation
-        Returns estimated premium for 1-week OTM put/call
-        """
-        # Delta approximation
-        moneyness = abs(current_price - strike) / current_price
-
-        if is_put:
-            # OTM Put premium
-            if current_price < strike:  # ITM Put
-                delta = 0.70
-            else:  # OTM Put
-                delta = min(0.50 - moneyness * 0.5, 0.50)
-        else:
-            # OTM Call premium
-            if current_price > strike:  # ITM Call
-                delta = 0.70
-            else:  # OTM Call
-                delta = min(0.50 - moneyness * 0.5, 0.50)
-
-        # Base premium calculation (simplified)
-        # For 1-week options: premium ≈ (distance to strike / 100) × 5 + base
-        time_decay = 0.98  # 1-week decay factor
-        base_premium = max(current_price * 0.0015, 25)  # Minimum ₹25 premium
-        distance_premium = abs(current_price - strike) * 0.001
-
-        premium = (base_premium + distance_premium) * time_decay * self.implied_volatility * 10
-        return max(premium, 25)  # Minimum ₹25 per unit
+    def get_history_status(self, symbol: str = "SENSEX") -> Dict:
+        completed = len(self.completed_candles)
+        ready = completed >= 2
+        return {
+            "status": "READY" if ready else "WARMING_UP",
+            "completed_bars": completed,
+            "required_bars": 2,
+            "reason": (
+                "Two authentic one-minute candles are available"
+                if ready
+                else f"Collecting authentic one-minute SENSEX candles ({completed}/2)"
+            ),
+        }
 
     def calculate_dynamic_tp(self, entry_price: float, recent_candles: List[Dict]) -> int:
         """Calculate TP based on recent volatility (10-15 points range)"""
@@ -111,23 +86,16 @@ class SensexOptionsScalpingAgent(BaseAgent):
         else:
             return self.take_profit_pips_min  # 10 points
 
-    def process_tick(self, price: float):
+    def process_tick(self, price: float, volume: float = 0):
         """Build 1-minute candles"""
         if price <= 0:
             return
 
-        # Track current ATM strike and option premium
-        self.current_atm_strike = self.calculate_atm_strike(price)
-        self.last_option_price = price
-        # Calculate realistic option premium for the ATM strike
-        strike_price = float(self.current_atm_strike)
-        self.last_option_premium = self.calculate_option_premium(strike_price, price, is_put=True)
-
         now = datetime.now(self.ist)
 
-        if self.current_candle_start is None:
+        if self.current_candle_start is None or self.current_candle_start.date() != now.date():
             self.current_candle_start = now
-            self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": 1}
+            self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
             return
 
         elapsed = (now - self.current_candle_start).total_seconds()
@@ -135,18 +103,21 @@ class SensexOptionsScalpingAgent(BaseAgent):
         self.current_candle["close"] = price
         self.current_candle["high"] = max(self.current_candle["high"], price)
         self.current_candle["low"] = min(self.current_candle["low"], price)
-        self.current_candle["volume"] = self.current_candle.get("volume", 0) + 1
+        self.current_candle["volume"] = self.current_candle.get("volume", 0) + volume
 
         # Complete candle after 60 seconds (1 minute)
         if elapsed >= 60:
-            self.completed_candles.append(self.current_candle.copy())
-            self.last_closed_candle = self.current_candle.copy()
+            # Avoid treating a stalled feed or overnight gap as one authentic
+            # one-minute candle.
+            if elapsed <= 90:
+                self.completed_candles.append(self.current_candle.copy())
+                self.last_closed_candle = self.current_candle.copy()
 
-            if len(self.completed_candles) > 20:
-                self.completed_candles.pop(0)
+                if len(self.completed_candles) > 20:
+                    self.completed_candles.pop(0)
 
             self.current_candle_start = now
-            self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": 1}
+            self.current_candle = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
 
     def can_trade_now(self) -> bool:
         """Check if we can place a trade (respects daily limit and cooldown)"""
@@ -196,7 +167,7 @@ class SensexOptionsScalpingAgent(BaseAgent):
             if price <= 0:
                 return TrendSignal.HOLD
 
-            self.process_tick(price)
+            self.process_tick(price, live_data.get("volume", 0))
 
             # Need at least 2 completed candles (previous + current forming)
             if len(self.completed_candles) < 2:
@@ -216,8 +187,8 @@ class SensexOptionsScalpingAgent(BaseAgent):
             # UPTREND: Previous green + Current green + Current breaks previous high
             if prev_is_green and curr_is_green:
                 if curr_candle["high"] > prev_candle["high"]:
-                    self.log_trade('BUY', price)
                     tp_points = self.calculate_dynamic_tp(price, self.completed_candles[-3:])
+                    self.last_signal_target_points = tp_points
                     print(f"[BREAKOUT] UPTREND BUY @ {price:.0f} | TP: {tp_points} pts | SL: {prev_candle['low']:.0f} | Trades: {len(self.trades_today)}/{self.max_trades_per_day}", flush=True)
                     return TrendSignal.BUY
 
@@ -227,8 +198,8 @@ class SensexOptionsScalpingAgent(BaseAgent):
 
             if prev_is_red and curr_is_red:
                 if curr_candle["low"] < prev_candle["low"]:
-                    self.log_trade('SELL', price)
                     tp_points = self.calculate_dynamic_tp(price, self.completed_candles[-3:])
+                    self.last_signal_target_points = tp_points
                     print(f"[BREAKOUT] DOWNTREND SELL @ {price:.0f} | TP: {tp_points} pts | SL: {prev_candle['high']:.0f} | Trades: {len(self.trades_today)}/{self.max_trades_per_day}", flush=True)
                     return TrendSignal.SELL
 

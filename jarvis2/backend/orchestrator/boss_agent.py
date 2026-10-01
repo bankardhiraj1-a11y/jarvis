@@ -104,7 +104,7 @@ class BossAgent:
 
             # Calculate confidence based on recent performance
             recent_trades = [t for t in all_trades if t.get("agent") == agent_name][-10:]
-            win_rate = len([t for t in recent_trades if t.get("pnl", 0) > 0]) / len(recent_trades) if recent_trades else 0.5
+            win_rate = len([t for t in recent_trades if t.get("pnl", 0) > 0]) / len(recent_trades) if recent_trades else 0.0
             confidence_scores[agent_name] = win_rate
 
         # Weighted consensus (agents with higher win rates get more say)
@@ -185,7 +185,7 @@ class BossAgent:
             tasks["improve_underperformers"].append({
                 "agent": agent["agent"],
                 "priority": "CRITICAL",
-                "assignment": f"Improve from {agent['win_rate']}% to 90%+",
+                "assignment": f"Work toward an aspirational 90% win-rate target (not guaranteed); current verified rate: {agent['win_rate']}%",
                 "resources": "Use market researcher for trend analysis",
             })
 

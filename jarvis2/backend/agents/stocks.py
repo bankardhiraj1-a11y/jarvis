@@ -1,6 +1,7 @@
 from agents.base import BaseAgent, Signal as TrendSignal
 from datetime import datetime, timedelta
 from typing import Dict, List
+from copy import deepcopy
 import pytz
 
 class StocksAgent(BaseAgent):
@@ -19,7 +20,8 @@ class StocksAgent(BaseAgent):
     """
     def __init__(self):
         super().__init__("STOCKS")
-        self.symbols = ["RELIANCE", "TCS", "INFY", "WIPRO", "ICICIBANK", "HDFCBANK", "BAJAJFINSV"]
+        # Restrict this live agent to the instruments subscribed by main.py.
+        self.symbols = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "BAJAJ-AUTO"]
 
         # Risk & exposure
         self.max_positions = 5
@@ -50,9 +52,53 @@ class StocksAgent(BaseAgent):
         self.max_trades_per_day = 3
         self.last_trade_time = None
         self.min_cooldown = timedelta(hours=2)
+        self.last_stop_loss_price = None
+        self.last_take_profit_price = None
+        self._symbol_state_fields = (
+            "completed_candles",
+            "current_candle",
+            "current_candle_start",
+            "volume_sma_20",
+            "atr_14",
+            "open_positions",
+            "trades_today",
+            "last_trade_time",
+            "last_stop_loss_price",
+            "last_take_profit_price",
+        )
+        self._symbol_states = {}
 
     def get_symbols(self) -> List[str]:
         return self.symbols
+
+    def _capture_symbol_state(self):
+        return {
+            field: deepcopy(getattr(self, field))
+            for field in self._symbol_state_fields
+        }
+
+    def _restore_symbol_state(self, state):
+        for field in self._symbol_state_fields:
+            setattr(self, field, deepcopy(state[field]))
+
+    def get_history_status(self, symbol: str) -> Dict:
+        state = self._symbol_states.get(str(symbol).upper())
+        completed = len(state["completed_candles"]) if state else 0
+        ready = completed >= 200
+        return {
+            "status": "READY" if ready else "WARMING_UP",
+            "completed_bars": completed,
+            "required_bars": 200,
+            "reason": (
+                "Daily 200 EMA history is ready"
+                if ready
+                else f"Collecting authentic daily bars for the 200 EMA ({completed}/200); no history is synthesized"
+            ),
+        }
+
+    def get_risk_levels(self, symbol: str):
+        state = self._symbol_states.get(str(symbol).upper(), {})
+        return state.get("last_stop_loss_price"), state.get("last_take_profit_price")
 
     def calculate_atr(self, candles: List[Dict], period: int = 14) -> float:
         """Calculate ATR for stop loss sizing"""
@@ -144,6 +190,17 @@ class StocksAgent(BaseAgent):
         return True
 
     def analyze(self, live_data: Dict) -> TrendSignal:
+        symbol = str(live_data.get("symbol") or self.symbols[0]).upper()
+        baseline = self._capture_symbol_state()
+        state = self._symbol_states.get(symbol, baseline)
+        self._restore_symbol_state(state)
+        try:
+            return self._analyze_current_symbol(live_data)
+        finally:
+            self._symbol_states[symbol] = self._capture_symbol_state()
+            self._restore_symbol_state(baseline)
+
+    def _analyze_current_symbol(self, live_data: Dict) -> TrendSignal:
         """
         VCP Breakout Strategy:
         1. Regime: 200 EMA > 50 EMA (uptrend)
@@ -159,8 +216,9 @@ class StocksAgent(BaseAgent):
 
             self.process_daily_tick(price, volume)
 
-            # Need at least 21 days for EMA + 20-day high
-            if len(self.completed_candles) < 21:
+            # EMA(200) is part of the regime filter; do not trade before all
+            # required authentic history has actually been collected.
+            if len(self.completed_candles) < 200:
                 return TrendSignal.HOLD
 
             # Regime filter
@@ -180,7 +238,10 @@ class StocksAgent(BaseAgent):
 
             # Volume filter
             vol_sma_20 = sum(self.volume_sma_20) / len(self.volume_sma_20) if self.volume_sma_20 else 0
-            volume_confirmed = volume > (vol_sma_20 * self.volume_threshold_multiplier)
+            # Compare today's accumulated volume with average completed-day
+            # volume, not the latest polling-interval delta.
+            today_volume = self.current_candle.get("volume", 0)
+            volume_confirmed = today_volume > (vol_sma_20 * self.volume_threshold_multiplier)
 
             # Breakout signal
             if price > high_20d and volume_confirmed:
@@ -197,6 +258,8 @@ class StocksAgent(BaseAgent):
 
                 tp_price = price + (2 * (price - sl_price))  # 2R target
 
+                self.last_stop_loss_price = sl_price
+                self.last_take_profit_price = tp_price
                 self.last_trade_time = datetime.now(self.ist)
                 self.trades_today.append({'date': self.last_trade_time, 'entry': price})
 

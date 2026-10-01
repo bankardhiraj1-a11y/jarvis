@@ -1,6 +1,7 @@
 from agents.base import BaseAgent, Signal as TrendSignal
 from datetime import datetime, timedelta
 from typing import Dict, List
+from copy import deepcopy
 import pytz
 
 class OptionsAgent(BaseAgent):
@@ -34,7 +35,7 @@ class OptionsAgent(BaseAgent):
     """
     def __init__(self):
         super().__init__("OPTIONS")
-        self.symbols = ["NIFTY50", "BANKNIFTY"]
+        self.symbols = ["NIFTY", "BANKNIFTY"]
 
         # Lot size: 10 lots per trade
         self.lot_size = 10
@@ -77,9 +78,99 @@ class OptionsAgent(BaseAgent):
         self.ist = pytz.timezone('Asia/Kolkata')
         self.last_trade_time = None
         self.min_cooldown = timedelta(minutes=15)
+        self.last_signal_tier = None
+        self.last_target_points = self.tp_points_conservative
+        self._symbol_state_fields = (
+            "completed_candles_15m",
+            "current_candle_15m",
+            "current_candle_start_15m",
+            "tier1_positions",
+            "tier2_positions",
+            "tier3_positions",
+            "daily_pnl",
+            "max_daily_loss_reached",
+            "last_trade_time",
+            "last_signal_tier",
+            "last_target_points",
+        )
+        self._symbol_states = {}
 
     def get_symbols(self) -> List[str]:
         return self.symbols
+
+    def _capture_symbol_state(self):
+        return {
+            field: deepcopy(getattr(self, field))
+            for field in self._symbol_state_fields
+        }
+
+    def _restore_symbol_state(self, state):
+        for field in self._symbol_state_fields:
+            setattr(self, field, deepcopy(state[field]))
+
+    def _with_symbol_state(self, symbol, callback):
+        key = str(symbol or self.symbols[0]).upper()
+        baseline = self._capture_symbol_state()
+        self._restore_symbol_state(self._symbol_states.get(key, baseline))
+        try:
+            result = callback()
+            return result
+        finally:
+            self._symbol_states[key] = self._capture_symbol_state()
+            self._restore_symbol_state(baseline)
+
+    def get_history_status(self, symbol: str) -> Dict:
+        state = self._symbol_states.get(str(symbol).upper())
+        completed = len(state["completed_candles_15m"]) if state else 0
+        ready = completed >= 21
+        return {
+            "status": "READY" if ready else "WARMING_UP",
+            "completed_bars": completed,
+            "required_bars": 21,
+            "reason": (
+                "15-minute strategy history is ready"
+                if ready
+                else f"Collecting authentic 15-minute candles ({completed}/21); no history is synthesized"
+            ),
+        }
+
+    def get_last_signal_metadata(self, symbol: str) -> Dict:
+        state = self._symbol_states.get(str(symbol).upper(), {})
+        return {
+            "tier": state.get("last_signal_tier"),
+            "target_points": state.get("last_target_points", self.tp_points_conservative),
+        }
+
+    def rollback_signal(self, symbol: str) -> None:
+        """Undo in-memory setup bookkeeping when a live option quote is unusable."""
+        def rollback():
+            tier = self.last_signal_tier
+            positions = {
+                "TIER1": self.tier1_positions,
+                "TIER2": self.tier2_positions,
+                "TIER3": self.tier3_positions,
+            }.get(tier)
+            if positions:
+                for index in range(len(positions) - 1, -1, -1):
+                    if positions[index].get("symbol") == str(symbol).upper():
+                        positions.pop(index)
+                        break
+            self.last_signal_tier = None
+
+        self._with_symbol_state(symbol, rollback)
+
+    def close_paper_position(self, symbol: str) -> None:
+        """Release this underlying's strategy slot after the paper trade closes."""
+        def remove_position():
+            key = str(symbol).upper()
+            for positions in (
+                self.tier1_positions,
+                self.tier2_positions,
+                self.tier3_positions,
+            ):
+                positions[:] = [position for position in positions if position.get("symbol") != key]
+
+        self._with_symbol_state(symbol, remove_position)
 
     def process_15m_candle(self, price: float, volume: int):
         """Build 15-min candles for signal confirmation"""
@@ -88,7 +179,10 @@ class OptionsAgent(BaseAgent):
 
         now = datetime.now(self.ist)
 
-        if self.current_candle_start_15m is None:
+        if (
+            self.current_candle_start_15m is None
+            or self.current_candle_start_15m.date() != now.date()
+        ):
             self.current_candle_start_15m = now
             self.current_candle_15m = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
             return
@@ -101,10 +195,13 @@ class OptionsAgent(BaseAgent):
         self.current_candle_15m["volume"] += volume
 
         if elapsed >= 900:  # 15 minutes
-            self.completed_candles_15m.append(self.current_candle_15m.copy())
+            # Do not turn feed outages or an overnight gap into a synthetic
+            # 15-minute candle.
+            if elapsed <= 930:
+                self.completed_candles_15m.append(self.current_candle_15m.copy())
 
-            if len(self.completed_candles_15m) > 20:
-                self.completed_candles_15m.pop(0)
+                if len(self.completed_candles_15m) > 250:
+                    self.completed_candles_15m.pop(0)
 
             self.current_candle_start_15m = now
             self.current_candle_15m = {"open": price, "high": price, "low": price, "close": price, "volume": volume}
@@ -162,6 +259,13 @@ class OptionsAgent(BaseAgent):
         return atr
 
     def analyze(self, live_data: Dict) -> TrendSignal:
+        symbol = str(live_data.get("symbol") or self.symbols[0]).upper()
+        result = self._with_symbol_state(
+            symbol, lambda: self._analyze_current_symbol(live_data)
+        )
+        return result
+
+    def _analyze_current_symbol(self, live_data: Dict) -> TrendSignal:
         """
         Multi-tier options strategy:
         TIER 1: Momentum breakout (high probability)
@@ -169,11 +273,16 @@ class OptionsAgent(BaseAgent):
         TIER 3: Volatility expansion (low probability, high payoff)
         """
         try:
+            self.last_signal_tier = None
             price = live_data.get('close', 0)
             volume = live_data.get('volume', 0)
 
-            if price <= 0 or volume <= 0:
+            if price <= 0:
                 return TrendSignal.HOLD
+            try:
+                volume = max(0.0, float(volume or 0))
+            except (TypeError, ValueError, OverflowError):
+                volume = 0
 
             self.process_15m_candle(price, volume)
 
@@ -210,14 +319,18 @@ class OptionsAgent(BaseAgent):
                 if price > ema_5 and ema_5 > ema_21 and rsi > 50 and vol_confirmed:
                     tp_points = self.tp_points_aggressive if rsi > 70 else self.tp_points_conservative
                     print(f"[TIER 1 BUY CALL] {self.lot_size} LOTS @ {price:.0f} | EMA(5):{ema_5:.0f} > EMA(21):{ema_21:.0f} | RSI:{rsi:.0f} | TP:{tp_points} SL:50", flush=True)
-                    self.tier1_positions.append({"entry": price, "type": "CALL"})
+                    self.last_signal_tier = "TIER1"
+                    self.last_target_points = tp_points
+                    self.tier1_positions.append({"entry": price, "type": "CALL", "symbol": str(live_data.get("symbol") or self.symbols[0]).upper()})
                     return TrendSignal.BUY
 
                 # SELL PUT: EMA(5) < EMA(21) + RSI < 50 + Volume
                 elif price < ema_5 and ema_5 < ema_21 and rsi < 50 and vol_confirmed:
                     tp_points = self.tp_points_aggressive if rsi < 30 else self.tp_points_conservative
                     print(f"[TIER 1 SELL PUT] {self.lot_size} LOTS @ {price:.0f} | EMA(5):{ema_5:.0f} < EMA(21):{ema_21:.0f} | RSI:{rsi:.0f} | TP:{tp_points} SL:50", flush=True)
-                    self.tier1_positions.append({"entry": price, "type": "PUT"})
+                    self.last_signal_tier = "TIER1"
+                    self.last_target_points = tp_points
+                    self.tier1_positions.append({"entry": price, "type": "PUT", "symbol": str(live_data.get("symbol") or self.symbols[0]).upper()})
                     return TrendSignal.SELL
 
             # === TIER 2: REVERSAL AT EXTREMES ===
@@ -229,13 +342,17 @@ class OptionsAgent(BaseAgent):
                 # SELL PUT (Reversal): Price near 20-bar high + ATR expansion
                 if price > (highest_high - atr * 0.5) and atr > 50:
                     print(f"[TIER 2 SELL PUT] Reversal @ {price:.0f} | High:{highest_high:.0f} | ATR:{atr:.0f} | TP:100 SL:50", flush=True)
-                    self.tier2_positions.append({"entry": price, "type": "PUT_REVERSAL"})
+                    self.last_signal_tier = "TIER2"
+                    self.last_target_points = self.tp_points_conservative
+                    self.tier2_positions.append({"entry": price, "type": "PUT_REVERSAL", "symbol": str(live_data.get("symbol") or self.symbols[0]).upper()})
                     return TrendSignal.SELL
 
                 # BUY CALL (Reversal): Price near 20-bar low + ATR expansion
                 elif price < (lowest_low + atr * 0.5) and atr > 50:
                     print(f"[TIER 2 BUY CALL] Reversal @ {price:.0f} | Low:{lowest_low:.0f} | ATR:{atr:.0f} | TP:100 SL:50", flush=True)
-                    self.tier2_positions.append({"entry": price, "type": "CALL_REVERSAL"})
+                    self.last_signal_tier = "TIER2"
+                    self.last_target_points = self.tp_points_conservative
+                    self.tier2_positions.append({"entry": price, "type": "CALL_REVERSAL", "symbol": str(live_data.get("symbol") or self.symbols[0]).upper()})
                     return TrendSignal.BUY
 
             # === TIER 3: VOLATILITY STRADDLE ===
@@ -243,7 +360,9 @@ class OptionsAgent(BaseAgent):
                 atr = self.calculate_atr(self.completed_candles_15m, 14)
                 if atr > 80:  # High volatility
                     print(f"[TIER 3 STRADDLE] {self.lot_size} LOTS (2-leg) @ {price:.0f} | IV Rank:{self.iv_rank:.0f} | ATR:{atr:.0f} | TP:300 SL:80", flush=True)
-                    self.tier3_positions.append({"entry": price, "type": "STRADDLE"})
+                    self.last_signal_tier = "TIER3"
+                    self.last_target_points = 300
+                    self.tier3_positions.append({"entry": price, "type": "STRADDLE", "symbol": str(live_data.get("symbol") or self.symbols[0]).upper()})
                     return TrendSignal.BUY  # Simplified: BUY side for 2-leg straddle
 
             return TrendSignal.HOLD
