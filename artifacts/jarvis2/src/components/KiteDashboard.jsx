@@ -4,10 +4,12 @@ import {
   BriefcaseBusiness,
   ChartNoAxesCombined,
   Download,
+  Receipt,
   RefreshCw,
   Search,
   UsersRound,
 } from 'lucide-react';
+import ChargesTab from './ChargesTab.jsx';
 import './KiteDashboard.css';
 
 const API_ROOT = '/jarvis2-api';
@@ -19,7 +21,7 @@ function currency(value, code = 'INR') {
   if (value === null || value === undefined || value === '') return '—';
   const amount = Number(value);
   if (!Number.isFinite(amount)) return '—';
-  const formatted = amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatted = amount.toLocaleString(code === 'USD' ? 'en-US' : 'en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return `${code === 'USD' ? '$' : '₹'}${formatted}`;
 }
 
@@ -43,6 +45,14 @@ function signedCurrency(value, code = 'INR') {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return '—';
   return `${amount > 0 ? '+' : ''}${currency(amount, code)}`;
+}
+
+function tradeQuantity(trade) {
+  if (trade.agent !== 'XAUUSD') return trade.quantity ?? '—';
+  const ounces = Number(trade.quantity_troy_ounces ?? trade.quantity);
+  if (!Number.isFinite(ounces) || ounces <= 0) return '—';
+  const lots = Number(trade.quantity_lots ?? ounces / 100);
+  return `${Number(lots.toFixed(2))} lot · ${Number(ounces.toFixed(2))} oz`;
 }
 
 function formatAgent(agent) {
@@ -165,16 +175,26 @@ export default function KiteDashboard() {
     });
   }, [performance, trades]);
 
-  const totalPnl = Number.isFinite(Number(portfolio?.total_pnl))
+  const usdPortfolioPnl = portfolio?.pnl_by_currency?.total?.USD;
+  const needsUnavailableFx = usdPortfolioPnl !== null
+    && usdPortfolioPnl !== undefined
+    && usdPortfolioPnl !== ''
+    && Number(usdPortfolioPnl) !== 0
+    && portfolio?.usd_inr_conversion?.status !== 'available';
+  const totalPnl = !needsUnavailableFx
+    && portfolio?.total_pnl !== null
+    && portfolio?.total_pnl !== undefined
+    && portfolio?.total_pnl !== ''
+    && Number.isFinite(Number(portfolio.total_pnl))
     ? Number(portfolio.total_pnl)
-    : trades.reduce((sum, trade) => sum + (Number(trade.pnl) || 0), 0);
+    : null;
   const activeCount = openTrades.length;
   const closedWins = closedTrades.filter((trade) => Number(trade.pnl) > 0).length;
   const winRate = closedTrades.length
     ? (closedWins / closedTrades.length) * 100
     : null;
   const summary = [
-    { label: 'Total P&L', value: currency(totalPnl), tone: totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : '', id: 'pnl' },
+    { label: 'Total P&L (INR)', value: currency(totalPnl), tone: totalPnl > 0 ? 'positive' : totalPnl < 0 ? 'negative' : '', id: 'pnl' },
     { label: 'Active Positions', value: String(activeCount), tone: '', id: 'active' },
     { label: 'Total Trades', value: String(trades.length), tone: '', id: 'trades' },
     { label: 'Win Rate', value: winRate === null ? '—' : `${winRate.toFixed(1)}%`, tone: '', id: 'win-rate' },
@@ -184,6 +204,7 @@ export default function KiteDashboard() {
     { id: 'active', label: 'Active Positions', Icon: BriefcaseBusiness },
     { id: 'closed', label: 'Closed Trades', Icon: Archive },
     { id: 'agents', label: 'By Agent', Icon: UsersRound },
+    { id: 'charges', label: 'Charges', Icon: Receipt },
   ];
 
   const resetFilterForTab = (tab) => {
@@ -271,10 +292,11 @@ export default function KiteDashboard() {
         stats.losing_trades,
         stats.win_rate,
         stats.total_pnl,
+        stats.currency,
         stats.confidence,
       ]);
       downloadCsv(`jarvis2-agent-performance-${dateStamp}.csv`, [
-        'agent', 'status', 'total_trades', 'wins', 'losses', 'win_rate', 'total_pnl', 'confidence',
+        'agent', 'status', 'total_trades', 'wins', 'losses', 'win_rate', 'total_pnl', 'currency', 'confidence',
       ], rows);
       return;
     }
@@ -333,6 +355,18 @@ export default function KiteDashboard() {
               <div className="summary-cell" key={item.id} data-testid={`metric-${item.id}`}>
                 <strong className={item.tone}>{item.value}</strong>
                 <span>{item.label}</span>
+                {item.id === 'pnl' && portfolio?.usd_inr_conversion?.status === 'available' && (
+                  <span>{`USD/INR ECB reference · ${portfolio.usd_inr_conversion.source_date}`}</span>
+                )}
+                {item.id === 'pnl' && portfolio?.usd_inr_conversion?.status === 'stale' && (
+                  <span>{`USD/INR rate stale; total not reported · ${portfolio.usd_inr_conversion.source_date}`}</span>
+                )}
+                {item.id === 'pnl' && portfolio?.usd_inr_conversion?.total_pnl_conversion === 'fx_rate_unavailable_or_stale' && (
+                  <span>USD/INR rate unavailable; total not reported</span>
+                )}
+                {item.id === 'pnl' && portfolio?.usd_inr_conversion?.total_pnl_conversion === 'not_required' && (
+                  <span>No USD P&amp;L to convert</span>
+                )}
               </div>
             ))}
           </div>
@@ -355,6 +389,7 @@ export default function KiteDashboard() {
             ))}
           </nav>
 
+          {activeTab === 'charges' ? <ChargesTab /> : (<>
           {activeTab !== 'agents' && (
             <div className="filter-strip" role="group" aria-label="Filter trades by agent" data-testid="filters-agents">
               <button
@@ -458,7 +493,7 @@ export default function KiteDashboard() {
                       <td>{stats.losing_trades ?? '—'}</td>
                       <td>{stats.win_rate == null ? '—' : `${Number(stats.win_rate).toFixed(1)}%`}</td>
                       <td className={Number(stats.total_pnl) < 0 ? 'negative' : 'positive'}>
-                        {stats.total_pnl == null ? '—' : signedCurrency(stats.total_pnl)}
+                        {stats.total_pnl == null ? '—' : signedCurrency(stats.total_pnl, stats.currency || 'INR')}
                       </td>
                     </tr>
                   )) : (
@@ -494,8 +529,14 @@ export default function KiteDashboard() {
                     <tr><td colSpan="10"><div className="loading-state"><span className="skeleton-line" /><span className="skeleton-line" /><span className="skeleton-line short" /></div></td></tr>
                   ) : sortedRows.length ? sortedRows.map((trade) => {
                     const code = trade.currency || 'INR';
+                    const isUnpricedOpen = activeTab !== 'closed'
+                      && trade.current_price == null
+                      && String(trade.status || '').toUpperCase() === 'OPEN';
                     const pnl = Number(trade.pnl);
-                    const hasPnl = trade.pnl !== null && trade.pnl !== undefined && Number.isFinite(pnl);
+                    const hasPnl = !isUnpricedOpen
+                      && trade.pnl !== null
+                      && trade.pnl !== undefined
+                      && Number.isFinite(pnl);
                     const shownPrice = activeTab === 'closed'
                       ? (trade.exit_price ?? trade.current_price)
                       : trade.current_price;
@@ -504,7 +545,7 @@ export default function KiteDashboard() {
                         <td className="symbol-cell" data-testid={`text-symbol-${trade.id}`}>{trade.symbol || '—'}</td>
                         <td><span className="agent-name-cell">{formatAgent(trade.agent)}</span></td>
                         <td><span className={`signal-label ${(trade.signal || trade.type || '').toUpperCase() === 'SELL' ? 'sell' : 'buy'}`}>{trade.signal || trade.type || '—'}</span></td>
-                        <td>{trade.quantity ?? '—'}</td>
+                        <td>{tradeQuantity(trade)}</td>
                         <td>{currency(trade.entry_price, code)}</td>
                         <td>{currency(shownPrice, code)}</td>
                         <td className={hasPnl ? (pnl < 0 ? 'negative' : 'positive') : 'muted'} data-testid={`text-pnl-${trade.id}`}>
@@ -533,6 +574,7 @@ export default function KiteDashboard() {
               </table>
             </div>
           )}
+          </>)}
         </section>
       </main>
     </div>

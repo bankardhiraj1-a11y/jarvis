@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "RmMDSNEMeVqG6ZtvqNutK"
+uri = "file://research/notes.md"
+type = "text"
+title = "XAUUSD research and testing notes"
+description = "Research scope, evidence limits, and progress toward a defensible higher-success-rate strategy."
+logical_id = "50cf8125-e7a3-4e2f-8515-380ac855aeb8"
+content_hash = "sha256:9786f893844cd2a9d8d8bd20b257f450c0387e4a0acaeec3362262f8dbfbd1f8"
+size = 2584
+mtime_ms = 1790855210384
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:bf7d956f-95f3-45e4-a18a-df80aec775c6/50cf8125-e7a3-4e2f-8515-380ac855aeb8/8e8326e2-365f-4dc7-b54f-9d48819ff8a4"
+storage_version_token = "1790855267616986"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "MibUYUadap_sjViiUucKX"
+uri = "file://jarvis2/evidence/xauusd_session_study_candidates.csv"
+type = "table"
+title = "Gold session study — all 12 tested combinations"
+description = "Saved genuine OANDA bid/ask replay. Fit/validation comparisons include observed spread but exclude unknown additional fees. No candidate qualified; final holdout was not inspected for selection."
+logical_id = "d43b09f0-25fa-4248-bb8f-0da44fa33c92"
+content_hash = "sha256:b05cedc72d35c0bab2ac0ed0d3435dfbacc3011132276839b299276e3820a95b"
+size = 13531
+mtime_ms = 1790858272203
+storage_uri = "gcs://replit-rams-assets-sisko/rams/assets/repl:bf7d956f-95f3-45e4-a18a-df80aec775c6/d43b09f0-25fa-4248-bb8f-0da44fa33c92/6990eff6-dcb1-4534-9c20-54879dc46c73"
+storage_version_token = "1790859810786057"
+content_type = "text/csv"

@@ -36,7 +36,7 @@ An AI trading dashboard and paper-trading backend imported from the Jarvis 2 Git
 
 1. Continue monitoring and working toward a 90% or higher success ratio in each segment. Treat this as an aspirational target, never a guaranteed outcome or a reason to fabricate results.
 2. Do not abandon a segment just because a strategy loses. Review all trades daily, research alternatives, backtest on genuine historical/provider data, and validate a replacement before applying it. Strategy-review and automatic-upgrade capabilities must not be claimed until implemented and verified.
-3. Never change the created dashboard for any reason unless the user explicitly replaces this instruction. Keep the current frontend design and behavior intact.
+3. Preserve the created dashboard design and behavior. The user explicitly authorized currency formatting and a Charges tab; these are narrow exceptions, not permission for a general redesign.
 4. Paper-capital allocation may be calculated automatically in pursuit of the performance target. Never allocate real funds, place real orders, hide losing trades, or manipulate the denominator to meet the target.
 5. Develop an evidence-based self-learning process for this platform. Synthetic test fixtures may test software but must never enter trade history or performance claims.
 6. Retain all trade data, including losses, for month-end analysis. Do not prune, reset, or rewrite history. Full-history snapshots and month-filtered exports must include provider provenance and distinguish legacy/unverified records. Local snapshots are not offsite disaster recovery.
@@ -48,6 +48,15 @@ An AI trading dashboard and paper-trading backend imported from the Jarvis 2 Git
 - Continue monitoring while the local service is running; do not promise unlimited uptime or an indefinitely running chat agent.
 - Authentication failures, stale/missing quotes, closed markets, and invalid contract data must block new paper entries. These safeguards are not removed to satisfy a win-rate target.
 - No public deployment is requested. Push the existing frontend and backend only after the user connects Git hosting and identifies the destination.
+
+## Authorized paper-learning policy
+
+- The user authorized autonomous experimental paper decisions on 2026-10-01. Gold and Sensex options scalping may collect forward paper outcomes without per-entry permission; this is not approval for real broker orders or a claim of validated profitability.
+- Options and Sensex options scalping are intraday only. Attempt quote-backed exits before the Indian market closes; missing fresh quotes must leave an explicit overdue/pending exit, never a fabricated same-day fill.
+- Gold holds must be justified by the strategy. Default to bounded intraday holding and avoid New York financing rollover while applicable financing remains unknown. Overnight permission requires explicit strategy intent and verified costs.
+- Stocks may hold according to the strategy. Quantity must fit available capital and risk limits, and expected target profit must remain positive after estimated charges. Reject unverifiable costs or economically inadequate setups rather than increasing quantity without limits.
+- Indian charge estimates use the requested Zerodha reference, not a claim that Dhan invoices have been verified. Keep OANDA spread already embedded in executable-side P&L separate from additional commission/financing; unknown fees must not become zero.
+- Keep automatic reviews and learning experimental until genuine forward samples support validation. Monitoring depends on a running service and valid market data; holidays and inactive entry windows must never be filled with artificial trades.
 
 ## Product
 

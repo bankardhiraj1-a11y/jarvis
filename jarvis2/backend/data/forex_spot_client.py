@@ -2,10 +2,12 @@
 Simple Forex Spot Price Client - Alternative to YFinance
 Uses free API endpoints for real-time XAUUSD pricing
 """
+import os
 import requests
 import time
 from datetime import datetime
 from typing import Dict
+
 
 class ForexSpotClient:
     """Get real-time XAUUSD (Gold Spot) prices from free forex APIs"""
@@ -26,7 +28,7 @@ class ForexSpotClient:
             if time.time() - self.cache[symbol]['timestamp'] < self.cache_ttl:
                 return self.cache[symbol]
 
-        # Try Onda Trading API (PRIMARY - real data with provided token)
+        # Try OANDA Trading API (PRIMARY - read-only price data)
         try:
             price = self._get_onda_api_price()
             if price and price > 2000:  # Sanity check
@@ -148,10 +150,16 @@ class ForexSpotClient:
         return None
 
     def _get_onda_api_price(self) -> float:
-        """Fetch from OANDA v20 API using provided token for XAU_USD (live)"""
+        """Fetch read-only OANDA v20 pricing for XAU_USD using runtime credentials."""
         try:
-            token = "78044fd89311e71bbcc682ecb62ba7dc-53f4236bfbc07f11ae5d1ca24110c35c"
-            account_id = "101-001-40500231-001"
+            token = (
+                os.getenv("OANDA_ACCESS_TOKEN", "").strip()
+                or os.getenv("ONDA_ACCESS_TOKEN", "").strip()
+            )
+            account_id = os.getenv("OANDA_ACCOUNT_ID", "").strip()
+            if not token or not account_id:
+                return None
+
             url = f"https://api-fxpractice.oanda.com/v3/accounts/{account_id}/pricing"
 
             headers = {

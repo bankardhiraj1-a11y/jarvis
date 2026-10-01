@@ -1,1 +1,2 @@
 - [Trading evidence boundaries](trading-evidence.md) — Dhan endpoint auth differs; preserve OHLC in replay and distinguish transaction time from depth observation.
+- [Adaptive trading research](adaptive-trading-research.md) — reused development searches accumulate selection bias; distinguish market availability, sessions and entry windows.

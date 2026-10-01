@@ -1,0 +1,205 @@
+{
+  "analysis": {
+    "H1": {
+      "complete_bars": 199,
+      "confirmed_pivot_rule": "strict 2 bars left and 2 complete bars right; confirmation is delayed by 2 bars",
+      "ema20_midpoint_approx": 4168.446112302307,
+      "ema20_slope_over_last_5_bars": "falling",
+      "ema50_midpoint_approx": 4170.997590159186,
+      "last_completed_bar_observed_at": "2026-10-01T12:00:00+00:00",
+      "last_completed_bar_open": "2026-10-01T11:00:00.000000000Z",
+      "last_two_confirmed_swing_highs": [
+        {
+          "bar_open_time": "2026-09-30T22:00:00.000000000Z",
+          "confirmed_at": "2026-10-01T01:00:00+00:00",
+          "price": 4160.615
+        },
+        {
+          "bar_open_time": "2026-10-01T05:00:00.000000000Z",
+          "confirmed_at": "2026-10-01T08:00:00+00:00",
+          "price": 4193.095
+        }
+      ],
+      "last_two_confirmed_swing_lows": [
+        {
+          "bar_open_time": "2026-10-01T00:00:00.000000000Z",
+          "confirmed_at": "2026-10-01T03:00:00+00:00",
+          "price": 4139.245000000001
+        },
+        {
+          "bar_open_time": "2026-10-01T08:00:00.000000000Z",
+          "confirmed_at": "2026-10-01T11:00:00+00:00",
+          "price": 4149.175
+        }
+      ],
+      "latest_close_position": "above_ema20_and_ema50",
+      "midpoint_close_approx_usd_per_troy_oz": 4182.73,
+      "status": "evaluated",
+      "timeframe": "H1",
+      "trend": "mixed_or_neutral"
+    },
+    "M15": {
+      "complete_bars": 199,
+      "confirmed_pivot_rule": "strict 2 bars left and 2 complete bars right; confirmation is delayed by 2 bars",
+      "ema20_midpoint_approx": 4172.094346916428,
+      "ema20_slope_over_last_5_bars": "rising",
+      "ema50_midpoint_approx": 4169.093721553227,
+      "last_completed_bar_observed_at": "2026-10-01T12:45:00+00:00",
+      "last_completed_bar_open": "2026-10-01T12:30:00.000000000Z",
+      "last_two_confirmed_swing_highs": [
+        {
+          "bar_open_time": "2026-10-01T10:45:00.000000000Z",
+          "confirmed_at": "2026-10-01T11:30:00+00:00",
+          "price": 4179.005
+        },
+        {
+          "bar_open_time": "2026-10-01T11:45:00.000000000Z",
+          "confirmed_at": "2026-10-01T12:30:00+00:00",
+          "price": 4185.995
+        }
+      ],
+      "last_two_confirmed_swing_lows": [
+        {
+          "bar_open_time": "2026-10-01T10:00:00.000000000Z",
+          "confirmed_at": "2026-10-01T10:45:00+00:00",
+          "price": 4150.285
+        },
+        {
+          "bar_open_time": "2026-10-01T11:15:00.000000000Z",
+          "confirmed_at": "2026-10-01T12:00:00+00:00",
+          "price": 4166.625
+        }
+      ],
+      "latest_close_position": "above_ema20_and_ema50",
+      "midpoint_close_approx_usd_per_troy_oz": 4182.4,
+      "status": "evaluated",
+      "timeframe": "M15",
+      "trend": "bullish"
+    },
+    "structure": {
+      "basis": "M15 two-left/two-right completed midpoint pivots, clustered at 0.15 x measured M15 ATR(14)",
+      "london_opening_range_0800_0830": {
+        "bars": [
+          "2026-10-01T07:00:00.000000000Z",
+          "2026-10-01T07:15:00.000000000Z"
+        ],
+        "high_usd_per_troy_oz": 4183.585,
+        "local_date": "2026-10-01",
+        "low_usd_per_troy_oz": 4155.4349999999995,
+        "range_end_local": "2026-10-01T08:30:00",
+        "range_start_local": "2026-10-01T08:00:00",
+        "status": "observed_from_two_complete_M15_bars",
+        "timezone": "Europe/London (DST-aware)"
+      },
+      "m15_atr14_midpoint_approx_usd_per_troy_oz": 7.444642857142948,
+      "previous_completed_provider_day": {
+        "high_usd_per_troy_oz": 4219.425,
+        "low_usd_per_troy_oz": 4147.415000000001,
+        "observed_at": "2026-09-30T21:00:00+00:00",
+        "provider_day_convention": "OANDA D1 provider candle; daily boundary is provider/NY-aligned, not guessed from UTC calendar date",
+        "provider_day_open_time": "2026-09-29T21:00:00.000000000Z"
+      },
+      "reference_bar_open_time": "2026-10-01T12:30:00.000000000Z",
+      "reference_midpoint_close_approx_usd_per_troy_oz": 4182.4,
+      "reference_observed_at": "2026-10-01T12:45:00+00:00",
+      "resistances": [
+        {
+          "center_usd_per_troy_oz": 4185.031666666667,
+          "pivot_times": [
+            "2026-09-30T02:45:00.000000000Z",
+            "2026-09-30T04:30:00.000000000Z",
+            "2026-09-29T20:45:00.000000000Z"
+          ],
+          "pivot_touches": 3,
+          "zone_high_usd_per_troy_oz": 4185.948348214285,
+          "zone_low_usd_per_troy_oz": 4184.036651785714
+        },
+        {
+          "center_usd_per_troy_oz": 4185.995,
+          "pivot_times": [
+            "2026-10-01T11:45:00.000000000Z"
+          ],
+          "pivot_touches": 1,
+          "zone_high_usd_per_troy_oz": 4186.5533482142855,
+          "zone_low_usd_per_troy_oz": 4185.436651785714
+        },
+        {
+          "center_usd_per_troy_oz": 4187.6900000000005,
+          "pivot_times": [
+            "2026-09-29T23:45:00.000000000Z"
+          ],
+          "pivot_touches": 1,
+          "zone_high_usd_per_troy_oz": 4188.248348214286,
+          "zone_low_usd_per_troy_oz": 4187.131651785715
+        }
+      ],
+      "status": "evaluated",
+      "supports": [
+        {
+          "center_usd_per_troy_oz": 4178.75,
+          "pivot_times": [
+            "2026-09-29T23:30:00.000000000Z"
+          ],
+          "pivot_touches": 1,
+          "zone_high_usd_per_troy_oz": 4179.308348214286,
+          "zone_low_usd_per_troy_oz": 4178.191651785714
+        },
+        {
+          "center_usd_per_troy_oz": 4176.65,
+          "pivot_times": [
+            "2026-09-30T11:15:00.000000000Z",
+            "2026-09-29T22:30:00.000000000Z"
+          ],
+          "pivot_touches": 2,
+          "zone_high_usd_per_troy_oz": 4177.403348214285,
+          "zone_low_usd_per_troy_oz": 4175.896651785714
+        },
+        {
+          "center_usd_per_troy_oz": 4171.3724999999995,
+          "pivot_times": [
+            "2026-09-30T02:30:00.000000000Z",
+            "2026-09-30T03:45:00.000000000Z"
+          ],
+          "pivot_touches": 2,
+          "zone_high_usd_per_troy_oz": 4172.003348214285,
+          "zone_low_usd_per_troy_oz": 4170.741651785714
+        }
+      ],
+      "zone_tolerance_0_15_atr_usd_per_troy_oz": 1.116696428571442
+    }
+  },
+  "generated_at_asia_kolkata": "2026-10-01T18:15:09.923244+05:30",
+  "generated_at_utc": "2026-10-01T12:45:09.923244+00:00",
+  "limitations": [
+    "This is a timestamped market-structure description, not a strategy, entry/exit instruction, forecast, or real-time execution claim.",
+    "Candle timestamps identify bar opens; OHLC is not observable until the interval has completed.",
+    "Daily high/low is the most recent fully completed OANDA provider D1 candle, whose boundary is provider/NY-aligned.",
+    "One user-stated 100 troy-ounce lot would arithmetically gain/lose USD 100 per USD 1/oz move before spread/fees; this does not imply a position or actual trade.",
+    "A practice feed establishes neither live-account authorization nor actual fills."
+  ],
+  "methodology": {
+    "ema": "EMA-20 and EMA-50 of completed-bar midpoint closes; approximately seeded from available requested history.",
+    "ohlc_basis": "Midpoints are computed from provider bid/ask OHLC; this is a midpoint approximation, not a tradable side.",
+    "pivot_confirmation": "Strict local high/low with two completed bars on each side; pivot is usable only after the two right-side bars close.",
+    "volume": "Not used; OANDA candle volume is a tick count, not traded gold volume.",
+    "zone_tolerance": "Measured M15 midpoint ATR(14) multiplied by 0.15; no hand-entered price levels."
+  },
+  "quote": null,
+  "source": {
+    "complete_only": true,
+    "current_quote_http_request_used": false,
+    "environment": "practice",
+    "granularities_requested": {
+      "D": 5,
+      "H1": 200,
+      "M15": 200
+    },
+    "historical_endpoint": "/v3/instruments/XAU_USD/candles",
+    "historical_http_requests": 3,
+    "historical_price_components": "BA (bid and ask OHLC)",
+    "instrument": "XAU_USD",
+    "provider": "OANDA",
+    "smoothed": false
+  },
+  "status": "evaluated"
+}

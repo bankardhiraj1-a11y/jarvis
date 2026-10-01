@@ -19,7 +19,7 @@ Historical OHLC bars must not be replayed as one close-price tick per bar. Prese
 
 **Why:** Close-only replay turned genuine one-minute candles into dojis and falsely reported no scalping signals, while also altering options ATR and range conditions. Synthetic intrabar paths would be equally unsupported.
 
-**How to apply:** Use an explicit completed-bar adapter with parity tests. Label bar-fill models and signal-only analysis separately from executable option-performance evidence.
+**How to apply:** Use an explicit completed-bar adapter with parity tests. Provider bar-open time must stay separate from close-price observation time, including session-boundary checks. Reject warmup bars that complete after the first sample opens. Label bar-fill models and signal-only analysis separately from executable option-performance evidence.
 
 An exchange last-trade timestamp is not a bid/ask depth-update timestamp.
 
@@ -32,3 +32,15 @@ OANDA practice and live API authorization must be verified separately. A success
 **Why:** Verification succeeded for practice account/pricing endpoints while the live account endpoint rejected the same token. Silently dropping the environment label would misrepresent the source.
 
 **How to apply:** Preserve practice/live environment with every observation, discover an account only when exactly one is authorized, and keep data collection separate from trade-entry approval.
+
+Validate currency-conversion instruments independently from the traded instrument; successful gold pricing does not imply usable USD/INR pricing.
+
+**Why:** Gold observations were current while the same provider returned an old, nontradeable USD/INR observation. Treating it as a live exchange rate would misstate INR portfolio P&L.
+
+**How to apply:** Keep source-currency trade P&L unchanged. Consolidate only with a fresh, explicitly sourced FX observation or labeled daily reference; missing FX or market marks must leave totals unavailable.
+
+Live and historical strategies must advance identical indicator state outside entry windows and while positions are open.
+
+**Why:** A candidate search suppressed EMA updates during those periods, while its proposed runtime continued updating them. That made its reported outcomes unsuitable for evaluating the deployed strategy.
+
+**How to apply:** Share a completed-bar reducer between replay and runtime. Entry eligibility may suppress orders, not indicator updates. Preserve the original strategy independently when evaluating replacements.

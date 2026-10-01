@@ -1,0 +1,340 @@
+{
+  "gold-mean-reversion-1": {
+    "title": "How do the gold intra-day returns and volatility react to monetary policy shocks?",
+    "url": "https://www.sciencedirect.com/science/article/pii/S1057521924004186",
+    "date": "unknown",
+    "tier": "Tier 1 academic; snippet only",
+    "evidencePath": "research/sources/gold-mean-reversion-snippets.md",
+    "claim": "Search snippet describes estimating gold-return response to FOMC monetary-policy surprises; not reversal profitability evidence.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1057521924004186",
+    "additionalEvidencePaths": [
+      "research/sources/gold-session-breakout-snippets.md"
+    ]
+  },
+  "gold-mean-reversion-2": {
+    "title": "What moves the gold market?",
+    "url": "https://onlinelibrary.wiley.com/doi/abs/10.1002/1096-9934(200103)21:3%3C257::AID-FUT4%3E3.0.CO;2-W",
+    "date": "2001",
+    "tier": "Tier 1 academic; foundational",
+    "evidencePath": "research/sources/gold-mean-reversion-snippets.md",
+    "claim": "Search snippet describes intraday return-volatility characterization for COMEX gold futures.",
+    "normalizedUrl": "https://onlinelibrary.wiley.com/doi/abs/10.1002/1096-9934(200103)21:3%3C257::AID-FUT4%3E3.0.CO;2-W",
+    "additionalEvidencePaths": [
+      "research/sources/gold-regime-pullback-snippets.md"
+    ]
+  },
+  "gold-mean-reversion-3": {
+    "title": "The timing of the flight to gold: An intra-day analysis of gold and the S&P500",
+    "url": "https://www.sciencedirect.com/science/article/pii/S1544612319301448",
+    "date": "unknown",
+    "tier": "Tier 1 academic; snippet only",
+    "evidencePath": "research/sources/gold-mean-reversion-snippets.md",
+    "claim": "Search snippet describes five-minute gold spot/futures and S&P 500 intraday analysis.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1544612319301448"
+  },
+  "gold-mean-reversion-4": {
+    "title": "The “night effect” of intraday trading: Evidence from Chinese gold and silver futures markets",
+    "url": "https://www.sciencedirect.com/science/article/abs/pii/S1044028325000110",
+    "date": "March 2025",
+    "tier": "Tier 1 academic; fetched summary",
+    "evidencePath": "research/sources/gold-mean-reversion-03-chinese-futures.md",
+    "claim": "SHFE futures show market/session-dependent intraday momentum and reversal; does not establish XAUUSD performance.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1044028325000110",
+    "additionalEvidencePaths": [
+      "research/sources/gold-regime-pullback-3-night-effect.md",
+      "research/sources/gold-regime-pullback-snippets.md",
+      "research/sources/gold-session-breakout-snippets.md"
+    ]
+  },
+  "gold-mean-reversion-5": {
+    "title": "On the efficiency of the gold market: Results of a real-time forecasting approach",
+    "url": "https://www.sciencedirect.com/science/article/abs/pii/S1057521914000209",
+    "date": "March 2014",
+    "tier": "Tier 1 academic; fetched summary",
+    "evidencePath": "research/sources/gold-mean-reversion-02-gold-efficiency.md",
+    "claim": "Monthly London gold-fixing forecast-sign timing rule did not beat buy-and-hold in the reported bootstrap reality check.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1057521914000209"
+  },
+  "gold-mean-reversion-6": {
+    "title": "Another look at trading costs and short-term reversal profits",
+    "url": "https://repub.eur.nl/pub/25718/AnotherLook_2011.pdf",
+    "date": "2012 journal publication; 2011 version",
+    "tier": "Tier 1 academic; indirect equity-cost evidence",
+    "evidencePath": "research/sources/gold-mean-reversion-snippets.md",
+    "claim": "Search snippet warns that reversal returns can diminish after costs; small-cap equity turnover limits transfer to gold.",
+    "normalizedUrl": "https://repub.eur.nl/pub/25718/AnotherLook_2011.pdf"
+  },
+  "gold-mean-reversion-7": {
+    "title": "Return predictability in metal futures markets: new evidence",
+    "url": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6587048",
+    "date": "June 2019",
+    "tier": "Tier 1 academic; fetched summary",
+    "evidencePath": "research/sources/gold-mean-reversion-01-metal-futures-predictability.md",
+    "claim": "Monthly metal-futures prediction including gold is not an M1 mean-reversion test; reported modeled costs do not validate XAUUSD.",
+    "normalizedUrl": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6587048"
+  },
+  "gold-mean-reversion-8": {
+    "title": "Intraday return predictability: Evidence from commodity ETFs",
+    "url": "https://www.sciencedirect.com/science/article/pii/S030142072030862X",
+    "date": "unknown",
+    "tier": "Tier 1 academic; snippet only, ETF evidence",
+    "evidencePath": "research/sources/gold-mean-reversion-snippets.md",
+    "claim": "Search snippet describes intraday predictability in high-frequency commodity ETFs including gold; ETF results do not establish OTC spot performance.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S030142072030862X"
+  },
+  "gold-mean-reversion-9": {
+    "title": "Optimizing Trading Strategies By Bollinger Bands And RSI",
+    "url": "https://ijcrt.org/papers/IJCRT24A4955.pdf",
+    "date": "unknown",
+    "tier": "Tier 3; unverified search-result lead",
+    "evidencePath": "research/sources/gold-mean-reversion-snippets.md",
+    "claim": "Snippet identifies an RSI/Bollinger paper but provides no verifiable gold venue, cost model or reproducible result.",
+    "normalizedUrl": "https://ijcrt.org/papers/IJCRT24A4955.pdf"
+  },
+  "gold-regime-pullback-10": {
+    "title": "Stylized facts of intraday precious metals",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5407636",
+    "date": "publication date unknown in returned evidence; sample May 2000–April 2015",
+    "tier": "Tier 1 — academic article / open full-text repository",
+    "evidencePath": "research/sources/gold-regime-pullback-1-intraday-facts.md; research/sources/gold-regime-pullback-snippets.md",
+    "claim": "Five-minute precious-metals sample studies stylized volatility/return facts; fetched summary says wholesale spot data and no tested entry/exit strategy.",
+    "normalizedUrl": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5407636"
+  },
+  "gold-regime-pullback-11": {
+    "title": "Does intraday technical trading have predictive power in precious metal markets?",
+    "url": "https://centaur.reading.ac.uk/79173/",
+    "date": "2018",
+    "tier": "Tier 1 — academic study / university repository record",
+    "evidencePath": "research/sources/gold-regime-pullback-2-technical-rules.md; research/sources/gold-regime-pullback-snippets.md",
+    "claim": "Record describes five-minute spot precious-metals and moving-average tests; results depend on parameter choices; repository record lacks full text.",
+    "normalizedUrl": "https://centaur.reading.ac.uk/79173"
+  },
+  "gold-regime-pullback-12": {
+    "title": "Predictability of the simple technical trading rules: An out-of-sample test",
+    "url": "https://www.sciencedirect.com/science/article/abs/pii/S1058330013000396",
+    "date": "unknown from returned evidence",
+    "tier": "Tier 1 — academic journal article abstract page",
+    "evidencePath": "research/sources/gold-regime-pullback-snippets.md",
+    "claim": "Snippet reports some technical-rule parameter combinations predictive for gold but not silver; venue, rules, costs, and sample are not established by snippet.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1058330013000396"
+  },
+  "gold-regime-pullback-13": {
+    "title": "Intraday Trading of Precious Metals Futures Using RSI",
+    "url": "http://ui.adsabs.harvard.edu/abs/2022CSF...15411676G/abstract",
+    "date": "2022",
+    "tier": "Tier 2 — academic abstract index",
+    "evidencePath": "research/sources/gold-regime-pullback-snippets.md",
+    "claim": "Truncated snippet makes an RSI return claim but omits exact rules, sample, costs, and comparator; requires full-paper cross-reference.",
+    "normalizedUrl": "http://ui.adsabs.harvard.edu/abs/2022CSF...15411676G/abstract"
+  },
+  "gold-regime-pullback-14": {
+    "title": "The asymmetric volatility in the gold market revisited",
+    "url": "https://www.sciencedirect.com/science/article/pii/S0165176516304876",
+    "date": "unknown from returned evidence",
+    "tier": "Tier 1 — academic journal article",
+    "evidencePath": "research/sources/gold-regime-pullback-snippets.md",
+    "claim": "Snippet describes HAR analysis of semivariance and realized volatility in gold futures, not directional profitability.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S0165176516304876"
+  },
+  "gold-session-breakout-15": {
+    "title": "Stylized facts of intraday precious metals",
+    "url": "https://centaur.reading.ac.uk/79175/1/BattenLuceyMcGroartyPeatUrquhart2017.pdf",
+    "date": "2017",
+    "tier": "Tier 1 academic full text",
+    "evidencePath": "research/sources/gold-session-breakout-04-reading-intraday-stylized-facts.md",
+    "claim": "Five-minute OTC spot precious-metals data show intraday periodicity in returns, volatility, volume and spreads; European hours generally have lower spreads.",
+    "normalizedUrl": "https://centaur.reading.ac.uk/79175/1/BattenLuceyMcGroartyPeatUrquhart2017.pdf"
+  },
+  "gold-session-breakout-16": {
+    "title": "Examining the impact of macroeconomic announcements on gold futures in a VAR-GARCH framework",
+    "url": "https://research-repository.uwa.edu.au/en/publications/examining-the-impact-of-macroeconomic-announcements-on-gold-futur",
+    "date": "2015",
+    "tier": "Tier 1 academic article / repository",
+    "evidencePath": "research/sources/gold-session-breakout-02-uwa-macro-announcements.md",
+    "claim": "Scheduled US macro announcements relate to activity in COMEX gold futures, including higher volatility and transaction costs.",
+    "normalizedUrl": "https://research-repository.uwa.edu.au/en/publications/examining-the-impact-of-macroeconomic-announcements-on-gold-futur"
+  },
+  "gold-session-breakout-17": {
+    "title": "Day trading on the gold futures market using Opening Range Breakouts and GARCH",
+    "url": "https://www.diva-portal.org/smash/get/diva2:845497/FULLTEXT01.pdf",
+    "date": "2014/15",
+    "tier": "Tier 2 bachelor thesis",
+    "evidencePath": "research/sources/gold-session-breakout-03-diva-gold-orb-thesis.md",
+    "claim": "An 11-basis-point NYMEX gold-futures ORB with end-of-day exit outperformed buy-and-hold historically, but had 78% losing days and incompletely quantified costs.",
+    "normalizedUrl": "https://www.diva-portal.org/smash/get/diva2:845497/FULLTEXT01.pdf"
+  },
+  "gold-session-breakout-18": {
+    "title": "Intraday seasonality in efficiency, liquidity, volatility and volume: Platinum and gold futures in Tokyo and New York",
+    "url": "https://www.sciencedirect.com/science/article/pii/S2405851318300102",
+    "date": "unknown",
+    "tier": "Tier 2 academic journal snippet only",
+    "evidencePath": "research/sources/gold-session-breakout-snippets.md",
+    "claim": "Search excerpt identifies a gold/platinum futures study of intraday seasonality in Tokyo and New York; session-specific findings are unavailable in the excerpt.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S2405851318300102"
+  },
+  "gold-session-breakout-19": {
+    "title": "Assessing the profitability of intraday opening range breakout strategies",
+    "url": "https://econpapers.repec.org/RePEc:eee:finlet:v:10:y:2013:i:1:p:27-33",
+    "date": "2013",
+    "tier": "Tier 2 scholarly bibliographic record/snippet",
+    "evidencePath": "research/sources/gold-session-breakout-snippets.md",
+    "claim": "A 2013 academic article assesses intraday ORB profitability; the excerpt does not expose instruments, costs or findings.",
+    "normalizedUrl": "https://econpapers.repec.org/RePEc:eee:finlet:v:10:y:2013:i:1:p:27-33"
+  },
+  "gold-session-breakout-20": {
+    "title": "What triggers intraday price jumps and co-jumps in gold?",
+    "url": "https://www.sciencedirect.com/science/article/abs/pii/S1057521925004673",
+    "date": "unknown",
+    "tier": "Tier 2 academic journal snippet only",
+    "evidencePath": "research/sources/gold-session-breakout-snippets.md",
+    "claim": "Snippet reports scheduled US news associated with a portion of gold-futures and ETF intraday jumps; this is not trade win-rate evidence.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1057521925004673",
+    "additionalEvidencePaths": [
+      "research/sources/gold-validation-risk-snippets.md"
+    ]
+  },
+  "gold-validation-risk-21": {
+    "title": "The Probability of Backtest Overfitting",
+    "url": "https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf",
+    "date": "unknown",
+    "tier": "Tier 2 academic / author-hosted paper",
+    "evidencePath": "research/sources/gold-validation-risk-snippets.md; research/sources/gold-validation-risk-01-backtest-overfitting.md",
+    "claim": "CSCV is presented as a method for assessing backtest overfitting; fetched paper cautions that flawed costs or unavailable-at-decision data invalidate evaluation.",
+    "normalizedUrl": "https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf"
+  },
+  "gold-validation-risk-22": {
+    "title": "Pseudo-Mathematics and Financial Charlatanism: The Effects of Backtest Overfitting on Out-of-Sample Performance",
+    "url": "http://papers.ssrn.com/sol3/Papers.cfm?abstract_id=2308659",
+    "date": "unknown",
+    "tier": "Tier 2 academic / SSRN",
+    "evidencePath": "research/sources/gold-validation-risk-snippets.md",
+    "claim": "Search-result snippet warns that trying more strategy configurations raises backtest-overfitting probability.",
+    "normalizedUrl": "http://papers.ssrn.com/sol3/Papers.cfm?abstract_id=2308659"
+  },
+  "gold-validation-risk-23": {
+    "title": "The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting and Non-Normality",
+    "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551",
+    "date": "July 31, 2014",
+    "tier": "Tier 2 academic / SSRN; foundational method",
+    "evidencePath": "research/sources/gold-validation-risk-snippets.md; research/sources/gold-validation-risk-02-deflated-sharpe.md",
+    "claim": "DSR corrects for selection bias under multiple testing and non-normal returns.",
+    "normalizedUrl": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551"
+  },
+  "gold-validation-risk-24": {
+    "title": "Transaction Cost Analysis for Futures",
+    "url": "https://www.cmegroup.com/content/dam/cmegroup/education/files/TCA-4.pdf",
+    "date": "unknown",
+    "tier": "Tier 1 official exchange / futures-specific",
+    "evidencePath": "research/sources/gold-validation-risk-snippets.md; research/sources/gold-validation-risk-03-cme-futures-costs.md",
+    "claim": "CME TCA describes futures-market execution-cost concepts; futures order-book assumptions do not directly establish OTC XAUUSD costs.",
+    "normalizedUrl": "https://www.cmegroup.com/content/dam/cmegroup/education/files/TCA-4.pdf"
+  },
+  "gold-validation-risk-25": {
+    "title": "Dynamic Trading with Predictable Returns and Transaction Costs",
+    "url": "https://www.nber.org/system/files/working_papers/w15205/revisions/w15205.rev0.pdf",
+    "date": "unknown",
+    "tier": "Tier 1 academic working paper / NBER",
+    "evidencePath": "research/sources/gold-validation-risk-snippets.md",
+    "claim": "Search-result snippet says signal alpha decay affects the trade-off between return and transaction costs.",
+    "normalizedUrl": "https://www.nber.org/system/files/working_papers/w15205/revisions/w15205.rev0.pdf"
+  },
+  "gold-validation-risk-26": {
+    "title": "Technical trading revisited: False discoveries, persistence ...",
+    "url": "https://www.sciencedirect.com/science/article/pii/S0304405X1200116X",
+    "date": "unknown",
+    "tier": "Tier 2 academic publisher",
+    "evidencePath": "research/sources/gold-validation-risk-snippets.md",
+    "claim": "Search-result snippet discusses futures transaction-cost/shorting assumptions and futures-history limits; not spot evidence.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S0304405X1200116X"
+  },
+  "gold-provider-execution-27": {
+    "title": "Instrument",
+    "url": "https://developer.oanda.com/rest-live-v20/instrument-df/",
+    "date": "unknown",
+    "tier": "Tier 1 — official OANDA API documentation",
+    "evidencePath": "research/sources/gold-provider-execution-01-oanda-instrument-candles.md; research/sources/gold-provider-execution-snippets.md",
+    "claim": "Candle schema provides bid/ask/mid OHLC; complete marks ended candles; candle volume counts created prices.",
+    "normalizedUrl": "https://developer.oanda.com/rest-live-v20/instrument-df"
+  },
+  "gold-provider-execution-28": {
+    "title": "Pricing",
+    "url": "https://developer.oanda.com/rest-live-v20/pricing-ep/",
+    "date": "unknown",
+    "tier": "Tier 1 — official OANDA API documentation",
+    "evidencePath": "research/sources/gold-provider-execution-02-oanda-pricing-api.md; research/sources/gold-provider-execution-snippets.md",
+    "claim": "Pricing stream is capped at four updates per second per instrument and may omit intervening prices.",
+    "normalizedUrl": "https://developer.oanda.com/rest-live-v20/pricing-ep"
+  },
+  "gold-provider-execution-29": {
+    "title": "Gold | Trade Gold | OANDA Global Markets",
+    "url": "https://www.oanda.com/bvi-en/cfds/instruments/xau-usd",
+    "date": "unknown",
+    "tier": "Tier 1 — official OANDA product page, jurisdiction-specific",
+    "evidencePath": "research/sources/gold-provider-execution-03-oanda-gold-product.md; research/sources/gold-provider-execution-snippets.md",
+    "claim": "The described XAU/USD product is a CFD measured in troy ounces and quoted against USD.",
+    "normalizedUrl": "https://www.oanda.com/bvi-en/cfds/instruments/xau-usd"
+  },
+  "gold-provider-execution-30": {
+    "title": "Beginners guide to order types | OANDA US",
+    "url": "https://www.oanda.com/us-en/skills-and-insights/education/introduction-trading/basics/order-types-explained",
+    "date": "unknown",
+    "tier": "Tier 1 — official OANDA US education",
+    "evidencePath": "research/sources/gold-provider-execution-snippets.md",
+    "claim": "OANDA warns stop orders can execute at a worse price than the specified stop.",
+    "normalizedUrl": "https://www.oanda.com/us-en/skills-and-insights/education/introduction-trading/basics/order-types-explained"
+  },
+  "gold-provider-execution-31": {
+    "title": "Best Execution Policy of OANDA TMS Brokers S.A.",
+    "url": "https://www.oanda.com/eu-en/document/31",
+    "date": "unknown",
+    "tier": "Tier 1 — official OANDA TMS policy, entity-specific",
+    "evidencePath": "research/sources/gold-provider-execution-snippets.md",
+    "claim": "Search snippet defines symmetric slippage; not generalized here beyond this policy.",
+    "normalizedUrl": "https://www.oanda.com/eu-en/document/31"
+  },
+  "gold-provider-execution-32": {
+    "title": "OANDA Financial Instruments Specification",
+    "url": "https://www.oanda.com/eu-en/instruments-specification",
+    "date": "unknown",
+    "tier": "Tier 1 — official OANDA specification page",
+    "evidencePath": "research/sources/gold-provider-execution-snippets.md",
+    "claim": "Search snippet identifies contract specifications and historical spread information as available resources; no specific values were retrieved.",
+    "normalizedUrl": "https://www.oanda.com/eu-en/instruments-specification"
+  },
+  "gap-33": {
+    "title": "Intraday Trading of Precious Metals Futures Using Algorithmic Systems",
+    "url": "https://www.sciencedirect.com/science/article/pii/S0960077921010304",
+    "date": "January 2022",
+    "tier": "Tier 1 — publisher page for the research article; accessible abstract/section snippets",
+    "evidencePath": "research/sources/gap-rsi-2022.md",
+    "claim": "Confirms RSI/Keltner systems, PSO optimization, minute data for five metals' futures in early 2020–September 2021, and RSI excess returns versus buy-and-hold. Exact RSI signals, venue/vendor, costs, and OOS protocol are not established in accessible text.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S0960077921010304"
+  },
+  "gap-34": {
+    "title": "Does intraday technical trading have predictive power in precious metal markets?",
+    "url": "https://www.sciencedirect.com/science/article/pii/S1042443117301087",
+    "date": "January 2018",
+    "tier": "Tier 1 — publisher page for the research article; accessible abstract/section snippets",
+    "evidencePath": "research/sources/gap-rsi-2018-alt.md",
+    "claim": "Confirms this is a spot-gold/silver moving-average study, not RSI; reports Thomson Reuters Tick History five-minute prices and in-/out-of-sample plus bootstrap testing. Accessible text reports gold-only predictability after parameter search and contains a 2014-versus-2015 sample-end discrepancy. Exact trade formulas, OOS split, venue, and costs remain unverified.",
+    "normalizedUrl": "https://www.sciencedirect.com/science/article/pii/S1042443117301087"
+  },
+  "gap-35": {
+    "title": "Does intraday technical trading have predictive power in precious metal markets?",
+    "url": "https://ideas.repec.org/a/eee/intfin/v52y2018icp102-113.html",
+    "date": "2018",
+    "tier": "Peer-reviewed journal article; RePEc abstract/record verified",
+    "evidencePath": "research/sources/gap-session-01-batten-2018.md",
+    "claim": "Three moving-average rules: standard literature parameters show no predictive power; significant gold results appear only among a parameter universe. Abstract does not identify venue/feed, actual broker bid/ask costs, European/NY spread sessions, or sufficient reproducible OOS evidence; does not establish spot-XAU/USD replication or a 90% hit rate.",
+    "normalizedUrl": "https://ideas.repec.org/a/eee/intfin/v52y2018icp102-113.html"
+  },
+  "gap-36": {
+    "title": "Performance of intraday technical trading in China’s gold market",
+    "url": "https://ideas.repec.org/a/eee/intfin/v76y2022ics1042443121001876.html",
+    "date": "2022",
+    "tier": "Peer-reviewed journal article; RePEc abstract/record verified",
+    "evidencePath": "research/sources/gap-session-02-china-futures-2022.md",
+    "claim": "Uses 5-minute most-active Shanghai Futures Exchange gold futures (2018-03-12 to 2021-03-10); after considering data snooping, transaction costs, market conditions, and rebalance frequency, persistent attractive OOS technical-rule performance is unlikely. Futures-market caution only; not OTC spot/broker/session evidence.",
+    "normalizedUrl": "https://ideas.repec.org/a/eee/intfin/v76y2022ics1042443121001876.html"
+  }
+}

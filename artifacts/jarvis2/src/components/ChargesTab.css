@@ -1,0 +1,43 @@
+.charges-tab { display: flex; flex-direction: column; gap: 14px; padding: 12px; }
+.ch-policy { font-size: 11px; color: var(--muted); border-left: 2px solid var(--cyan); padding: 6px 10px; background: var(--surface); }
+.ch-section h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 8px; color: var(--text); }
+.ch-tag { font-size: 9px; color: var(--cyan); margin-left: 8px; }
+.ch-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.ch-card { background: var(--surface); border: 1px solid var(--line); padding: 10px; font-size: 11px; color: var(--muted); }
+.ch-card h3 { margin: 0 0 6px; font-size: 11px; color: var(--text); }
+.ch-pre { max-height: 160px; overflow: auto; font: 10px 'DM Mono', monospace; white-space: pre-wrap; color: var(--muted); }
+.ch-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+.ch-form label { display: flex; flex-direction: column; gap: 4px; font-size: 10px; color: var(--muted); }
+.ch-form input, .ch-form select { background: var(--surface); border: 1px solid var(--line); color: var(--text); padding: 6px 8px; font: 12px 'DM Mono', monospace; }
+.ch-result { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.ch-flag { font-size: 11px; color: var(--cyan); }
+.ch-basis { color: var(--muted); font-size: 10px; }
+.ch-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 6px; }
+.ch-totals div { display: flex; justify-content: space-between; gap: 8px; background: var(--surface); border: 1px solid var(--line); padding: 6px 10px; font-size: 11px; color: var(--muted); }
+.ch-totals strong { font: 600 11px 'DM Mono', monospace; color: var(--text); }
+.ch-status { font-size: 11px; }
+.ch-status.ok { color: var(--green); }
+.ch-status.warn { color: var(--red); }
+.ch-note { font-size: 10px; color: var(--muted); margin: 4px 0; }
+.ch-sources { display: flex; flex-wrap: wrap; gap: 12px; font-size: 10px; margin-top: 6px; }
+.ch-sources a { color: var(--cyan); display: inline-flex; gap: 4px; align-items: center; }
+.ch-trade { background: var(--surface); border: 1px solid var(--line); margin-bottom: 6px; padding: 8px 10px; font-size: 11px; }
+.ch-trade summary { display: flex; gap: 16px; cursor: pointer; flex-wrap: wrap; }
+.ch-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 11px; }
+.ch-row strong { font: 500 11px 'DM Mono', monospace; color: var(--text); text-align: right; }
+.ch-rule-group h4 { margin: 8px 0 2px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--cyan); }
+.ch-check { grid-column: 1 / -1; } .ch-check small { color: var(--muted); }
+
+/* Mobile containment: scoped to the charges root only */
+.charges-tab { min-width: 0; width: 100%; max-width: 100%; overflow-wrap: anywhere; }
+.charges-tab * { min-width: 0; }
+.charges-tab .ch-section, .charges-tab .ch-result, .charges-tab .ch-card, .charges-tab .ch-trade { max-width: 100%; }
+.charges-tab .ch-table-wrap { width: 100%; max-width: 100%; overflow-x: auto; }
+.charges-tab .trades-table.ch-table { min-width: 480px; }
+.charges-tab .ch-table td, .charges-tab .ch-table th { white-space: normal; overflow-wrap: anywhere; }
+.charges-tab .ch-sources a { overflow-wrap: anywhere; }
+.charges-tab .ch-pre { max-width: 100%; }
+@media (max-width: 639px) {
+  .charges-tab .ch-grid, .charges-tab .ch-form, .charges-tab .ch-totals { grid-template-columns: minmax(0, 1fr); }
+  .charges-tab .ch-form input, .charges-tab .ch-form select { width: 100%; }
+}
