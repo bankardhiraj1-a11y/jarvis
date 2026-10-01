@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Enum as SQLEnum, ForeignKey
 from datetime import datetime
 import enum
+import uuid
 from database import Base
 
 class TradeType(str, enum.Enum):
@@ -37,6 +38,32 @@ class Trade(Base):
     data_source = Column(String(16), nullable=True)
     entry_data_timestamp = Column(String(40), nullable=True)
     exit_data_timestamp = Column(String(40), nullable=True)
+
+class PaperLimitOrder(Base):
+    __tablename__ = "paper_limit_orders"
+
+    id = Column(Integer, primary_key=True)
+    client_order_id = Column(String(80), nullable=False, unique=True, index=True)
+    origin = Column(String(32), nullable=False, default="paper_manual")
+    symbol = Column(String(20), nullable=False, default="XAUUSD")
+    side = Column(String(8), nullable=False, default="SELL")
+    manual_order = Column(Boolean, nullable=False, default=True)
+    session_override = Column(Boolean, nullable=False, default=True)
+    limit_price = Column(Float, nullable=False)
+    stop_loss = Column(Float, nullable=False)
+    take_profit = Column(Float, nullable=False)
+    take_profit_2 = Column(Float, nullable=False)
+    quantity_troy_ounces = Column(Float, nullable=False)
+    status = Column(String(20), nullable=False, default="PENDING")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    filled_at = Column(DateTime, nullable=True)
+    fill_price = Column(Float, nullable=True)
+    first_trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+    second_trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+    last_reason = Column(String(500), nullable=True)
+    state_version = Column(Integer, nullable=False, default=1)
+    __mapper_args__ = {"version_id_col": state_version}
 
 class Position(Base):
     __tablename__ = "positions"
@@ -75,3 +102,44 @@ class MarketData(Base):
     close_price = Column(Float, nullable=False)
     volume = Column(Float, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ManualPaperOrder(Base):
+    """Durable parent for user-created, provider-quoted paper orders."""
+
+    __tablename__ = "manual_paper_orders"
+
+    id = Column(Integer, primary_key=True)
+    version_id = Column(Integer, nullable=False, default=1)
+    __mapper_args__ = {"version_id_col": version_id}
+    client_order_id = Column(
+        String(80), nullable=False, unique=True, index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    market = Column(String(16), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(8), nullable=False)
+    order_type = Column(String(8), nullable=False)
+    limit_price = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=False)
+    take_profit = Column(Float, nullable=False)
+    take_profit_2 = Column(Float, nullable=True)
+    quantity = Column(Float, nullable=False)
+    quantity_troy_ounces = Column(Float, nullable=True)
+    quantity_lots = Column(Integer, nullable=True)
+    option_lot_size = Column(Integer, nullable=True)
+    option_type = Column(String(2), nullable=True)
+    strike = Column(Float, nullable=True)
+    expiry = Column(String(10), nullable=True)
+    status = Column(String(20), nullable=False, default="PENDING")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    filled_at = Column(DateTime, nullable=True)
+    fill_price = Column(Float, nullable=True)
+    first_trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+    second_trade_id = Column(Integer, ForeignKey("trades.id"), nullable=True)
+    max_hold_minutes = Column(Integer, nullable=False)
+    manual_order = Column(Boolean, nullable=False, default=True)
+    session_override = Column(Boolean, nullable=False, default=True)
+    allow_overnight = Column(Boolean, nullable=False, default=False)
+    last_reason = Column(String(500), nullable=True)

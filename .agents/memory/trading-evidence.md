@@ -44,3 +44,9 @@ Live and historical strategies must advance identical indicator state outside en
 **Why:** A candidate search suppressed EMA updates during those periods, while its proposed runtime continued updating them. That made its reported outcomes unsuitable for evaluating the deployed strategy.
 
 **How to apply:** Share a completed-bar reducer between replay and runtime. Entry eligibility may suppress orders, not indicator updates. Preserve the original strategy independently when evaluating replacements.
+
+Test the boundary between a provider adapter and the order processor using the adapter's actual output shape, not only conveniently normalized service fixtures.
+
+**Why:** Isolated order tests supplied provenance and nested contract identity that the real adapter did not return. All tests passed while genuine Indian-market orders would have remained blocked.
+
+**How to apply:** Include isolated adapter-to-processor parity tests. Add provenance only at a trusted adapter boundary, and derive contract identity from provider-backed fields and verified metadata, never from user-entered prices or unverified lot assumptions.

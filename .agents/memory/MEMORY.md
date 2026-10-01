@@ -1,2 +1,3 @@
 - [Trading evidence boundaries](trading-evidence.md) — Dhan endpoint auth differs; preserve OHLC in replay and distinguish transaction time from depth observation.
 - [Adaptive trading research](adaptive-trading-research.md) — reused development searches accumulate selection bias; distinguish market availability, sessions and entry windows.
+- [Manual order intent](manual-order-intent.md) — manual strategy permissions stay per-order and paper-only; they do not enable or replace automatic strategies.

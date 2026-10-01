@@ -10,6 +10,7 @@ import {
   UsersRound,
 } from 'lucide-react';
 import ChargesTab from './ChargesTab.jsx';
+import ManualOrderForm from './ManualOrderForm.jsx';
 import './KiteDashboard.css';
 
 const API_ROOT = '/jarvis2-api';
@@ -96,8 +97,15 @@ export default function KiteDashboard() {
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [clock, setClock] = useState(() => new Date());
+  const [paperOrders, setPaperOrders] = useState(null);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersError, setOrdersError] = useState('');
+  const [orderActionError, setOrderActionError] = useState('');
+  const [cancellingOrderIds, setCancellingOrderIds] = useState([]);
+  const [manualOrderOpen, setManualOrderOpen] = useState(false);
   const inFlight = useRef(false);
   const hasLoaded = useRef(false);
+  const ordersRequest = useRef(0);
 
   const refresh = useCallback(async (manual = false) => {
     if (inFlight.current) return;
@@ -147,15 +155,77 @@ export default function KiteDashboard() {
     }
   }, []);
 
+  const loadPaperOrders = useCallback(async () => {
+    const requestId = ++ordersRequest.current;
+    try {
+      const response = await fetch(`${API_ROOT}/paper/orders`, { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error(`Paper orders request failed (HTTP ${response.status}).`);
+      }
+      const payload = await response.json();
+      if (!payload || !Array.isArray(payload.orders)) {
+        throw new Error('Paper orders response did not include an orders list.');
+      }
+      if (requestId === ordersRequest.current) {
+        setPaperOrders(payload.orders);
+        setOrdersError('');
+      }
+    } catch (requestError) {
+      if (requestId === ordersRequest.current) {
+        setOrdersError(requestError instanceof Error
+          ? requestError.message
+          : 'Could not load paper orders.');
+      }
+    } finally {
+      if (requestId === ordersRequest.current) setOrdersLoading(false);
+    }
+  }, []);
+
+  const cancelPaperOrder = useCallback(async (order) => {
+    if (order?.id === null || order?.id === undefined || order.id === '') return;
+    setOrderActionError('');
+    setCancellingOrderIds((ids) => [...ids, String(order.id)]);
+    try {
+      const response = await fetch(
+        `${API_ROOT}/paper/orders/${encodeURIComponent(order.id)}/cancel`,
+        { method: 'POST', credentials: 'include' },
+      );
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message = payload?.detail || payload?.message || payload?.error;
+        throw new Error(message ? String(message) : `Order cancellation failed (HTTP ${response.status}).`);
+      }
+      await loadPaperOrders();
+    } catch (requestError) {
+      setOrderActionError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not cancel this paper order.');
+    } finally {
+      setCancellingOrderIds((ids) => ids.filter((id) => id !== String(order.id)));
+    }
+  }, [loadPaperOrders]);
+
+  const refreshAfterManualOrder = useCallback(async () => {
+    await Promise.all([refresh(true), loadPaperOrders()]);
+  }, [loadPaperOrders, refresh]);
+
   useEffect(() => {
     refresh();
+    loadPaperOrders();
     const poll = window.setInterval(() => refresh(), 5000);
+    const ordersPoll = window.setInterval(() => loadPaperOrders(), 5000);
     const ticker = window.setInterval(() => setClock(new Date()), 1000);
     return () => {
       window.clearInterval(poll);
+      window.clearInterval(ordersPoll);
       window.clearInterval(ticker);
     };
-  }, [refresh]);
+  }, [loadPaperOrders, refresh]);
 
   const openTrades = useMemo(() => trades.filter((trade) => String(trade.status || '').toUpperCase() === 'OPEN'), [trades]);
   const closedTrades = useMemo(() => trades.filter((trade) => String(trade.status || '').toUpperCase() === 'CLOSED'), [trades]);
@@ -541,7 +611,7 @@ export default function KiteDashboard() {
                       ? (trade.exit_price ?? trade.current_price)
                       : trade.current_price;
                     return (
-                      <tr key={trade.id} data-testid={`row-trade-${trade.id}`}>
+                      <tr id={`trade-${trade.id}`} key={trade.id} data-testid={`row-trade-${trade.id}`}>
                         <td className="symbol-cell" data-testid={`text-symbol-${trade.id}`}>{trade.symbol || '—'}</td>
                         <td><span className="agent-name-cell">{formatAgent(trade.agent)}</span></td>
                         <td><span className={`signal-label ${(trade.signal || trade.type || '').toUpperCase() === 'SELL' ? 'sell' : 'buy'}`}>{trade.signal || trade.type || '—'}</span></td>
@@ -574,10 +644,234 @@ export default function KiteDashboard() {
               </table>
             </div>
           )}
+          {activeTab === 'active' && (
+            <>
+              <div className="manual-order-toggle-row">
+                <button
+                  className="manual-order-toggle"
+                  type="button"
+                  onClick={() => setManualOrderOpen((open) => !open)}
+                  aria-expanded={manualOrderOpen}
+                  aria-controls="manual-order-panel"
+                >
+                  {manualOrderOpen ? 'Close Manual Paper Order' : 'Manual Paper Order'}
+                </button>
+              </div>
+              {manualOrderOpen && (
+                <ManualOrderForm
+                  apiRoot={API_ROOT}
+                  onSuccess={refreshAfterManualOrder}
+                  onClose={() => setManualOrderOpen(false)}
+                />
+              )}
+              <PendingPaperOrders
+                orders={paperOrders}
+                loading={ordersLoading}
+                error={ordersError}
+                actionError={orderActionError}
+                cancellingOrderIds={cancellingOrderIds}
+                openTrades={openTrades}
+                onCancel={cancelPaperOrder}
+              />
+            </>
+          )}
           </>)}
         </section>
       </main>
     </div>
+  );
+}
+
+function orderPrice(value, code = 'USD') {
+  if (value === null || value === undefined || value === '') return '—';
+  const amount = Number(value);
+  return Number.isFinite(amount) ? currency(amount, code) : '—';
+}
+
+function orderQuantity(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0 ? Number(amount.toFixed(2)) : null;
+}
+
+function expirationIST(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  })} IST`;
+}
+
+function PendingPaperOrders({ orders, loading, error, actionError, cancellingOrderIds, openTrades, onCancel }) {
+  const pendingOrders = Array.isArray(orders)
+    ? orders.filter((order) => String(order?.status || '').toUpperCase() === 'PENDING')
+    : [];
+  const recentFilledOrders = Array.isArray(orders)
+    ? orders
+      .filter((order) => String(order?.status || '').toUpperCase() === 'FILLED')
+      .sort((left, right) => {
+        const leftTime = new Date(left?.filled_at || 0).getTime();
+        const rightTime = new Date(right?.filled_at || 0).getTime();
+        return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+      })
+      .slice(0, 3)
+    : [];
+
+  return (
+    <section className="pending-orders" aria-labelledby="pending-orders-title" data-testid="section-pending-orders">
+      <div className="pending-orders-heading">
+        <div>
+          <div className="pending-orders-title-row">
+            <h2 id="pending-orders-title">Pending Paper Orders</h2>
+            <span className="paper-badge">PAPER</span>
+          </div>
+          <p>Orders are separate from active positions until filled.</p>
+        </div>
+        {orders !== null && !error && <span className="pending-orders-count">{pendingOrders.length} pending</span>}
+      </div>
+
+      {error ? (
+        <div className="pending-orders-error" role="alert" data-testid="status-orders-error">
+          Unable to load paper orders: {error}
+        </div>
+      ) : loading ? (
+        <div className="pending-orders-empty" role="status">Loading pending paper orders…</div>
+      ) : pendingOrders.length ? (
+        <div className="pending-order-list">
+          {pendingOrders.map((order) => {
+            const market = String(order.market || (order.quantity_troy_ounces != null ? 'GOLD' : 'STOCKS')).toUpperCase();
+            const code = market === 'GOLD' ? 'USD' : 'INR';
+            const isGold = market === 'GOLD';
+            const isOption = market === 'OPTIONS' || order.quantity_lots != null || order.option_type != null;
+            const orderType = String(order.order_type || 'LIMIT').toUpperCase();
+            const quantity = orderQuantity(isGold
+              ? (order.quantity_troy_ounces ?? order.quantity)
+              : isOption ? order.quantity_lots : order.quantity);
+            const quantityLabel = isGold ? 'oz' : isOption ? 'lots' : 'shares';
+            const limitPrice = order.limit_price === null || order.limit_price === undefined || order.limit_price === ''
+              ? null
+              : Number(order.limit_price);
+            const stopLoss = order.stop_loss === null || order.stop_loss === undefined || order.stop_loss === ''
+              ? null
+              : Number(order.stop_loss);
+            const goldRisk = isGold && String(order.side || '').toUpperCase() === 'SELL'
+              ? (limitPrice !== null && stopLoss !== null && quantity !== null
+                ? (stopLoss - limitPrice) * quantity
+                : null)
+              : isGold && String(order.side || '').toUpperCase() === 'BUY'
+                ? (limitPrice !== null && stopLoss !== null && quantity !== null
+                  ? (limitPrice - stopLoss) * quantity
+                  : null)
+                : null;
+            const risk = Number.isFinite(goldRisk) && goldRisk > 0 ? goldRisk : null;
+            const targetOne = order.take_profit;
+            const targetTwo = order.take_profit_2;
+            const isCancelling = cancellingOrderIds.includes(String(order.id));
+            const side = String(order.side || '—').toUpperCase();
+            const optionContract = isOption && order.option_type
+              ? `${order.symbol || '—'} ${order.strike ?? ''} ${String(order.option_type).toUpperCase()}`.trim()
+              : order.symbol || '—';
+            return (
+              <article className="pending-order-card" key={order.id ?? `${order.symbol}-${order.limit_price}`}>
+                <div className="pending-order-summary">
+                  <div>
+                    <strong>{optionContract}</strong>
+                    <span className={`signal-label ${side === 'SELL' ? 'sell' : 'buy'}`}>
+                      {isOption ? `${side} ${String(order.option_type || '').toUpperCase()}`.trim() : side} {orderType}
+                    </span>
+                  </div>
+                  <span className="pending-order-status">{String(order.status || 'PENDING').toUpperCase()}</span>
+                </div>
+                <div className="pending-order-details">
+                  <span><small>Market / currency</small>{market} · {code}</span>
+                  <span><small>{orderType === 'MARKET' ? 'Entry' : orderType === 'STOP' ? 'Stop / entry' : 'Limit'}</small>{orderPrice(order.limit_price, code)}</span>
+                  <span><small>Stop loss</small>{orderPrice(order.stop_loss, code)}</span>
+                  <span><small>TP1</small>{orderPrice(targetOne, code)}</span>
+                  <span><small>TP2</small>{orderPrice(targetTwo, code)}</span>
+                  <span>
+                    <small>Quantity</small>
+                    {quantity === null ? '—' : `${quantity} ${quantityLabel}`}
+                  </span>
+                  {isGold && (
+                    <span>
+                      <small>Estimated risk at stop · before gaps/fees</small>
+                      {risk === null ? '—' : orderPrice(risk, code)}
+                    </span>
+                  )}
+                  {isOption && <span><small>Expiry</small>{order.expiry ? String(order.expiry) : '—'}</span>}
+                  <span><small>Expires</small>{expirationIST(order.expires_at)}</span>
+                </div>
+                <div className="pending-order-footer">
+                  <span><small>Latest status reason</small>{order.last_reason || 'No status reason reported.'}</span>
+                  <button
+                    type="button"
+                    className="pending-order-cancel"
+                    onClick={() => onCancel(order)}
+                    disabled={isCancelling || order.id === null || order.id === undefined || order.id === ''}
+                    aria-label={`Cancel ${order.symbol || 'pending'} paper order`}
+                    data-testid={`button-cancel-order-${order.id ?? 'unavailable'}`}
+                  >
+                    {isCancelling ? 'Cancelling…' : 'Cancel order'}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="pending-orders-empty" data-testid="state-no-pending-orders">
+          No pending paper orders.
+        </div>
+      )}
+
+      {actionError && <div className="pending-orders-error" role="alert" data-testid="status-order-action-error">{actionError}</div>}
+
+      {recentFilledOrders.length > 0 && (
+        <div className="recent-filled-orders" aria-label="Recently filled paper orders">
+          <h3>Recently filled</h3>
+          {recentFilledOrders.map((order) => {
+            const tradeIds = [order.first_trade_id, order.second_trade_id]
+              .filter((id) => id !== null && id !== undefined && id !== '');
+            const linkedTrades = tradeIds
+              .map((id) => openTrades.find((trade) => String(trade.id) === String(id)))
+              .filter(Boolean);
+            const orderType = String(order.order_type || 'LIMIT').toUpperCase();
+            const side = String(order.side || '—').toUpperCase();
+            const optionSide = order.option_type ? ` ${String(order.option_type).toUpperCase()}` : '';
+            const isGold = String(order.market || '').toUpperCase() === 'GOLD'
+              || (order.quantity_troy_ounces !== null && order.quantity_troy_ounces !== undefined);
+            const code = isGold ? 'USD' : 'INR';
+            return (
+              <div className="recent-filled-order" key={order.id ?? `${order.symbol}-${order.filled_at}`}>
+                <span>
+                  <strong>{order.symbol || '—'}</strong> · {side}{optionSide} {orderType} filled
+                  {order.fill_price != null ? ` at ${orderPrice(order.fill_price, code)}` : ''}
+                  {order.filled_at ? ` · ${expirationIST(order.filled_at)}` : ''}
+                </span>
+                {linkedTrades.length > 0 ? (
+                  <span className="filled-trade-links">
+                    {linkedTrades.map((trade) => (
+                      <a href={`#trade-${trade.id}`} key={trade.id}>
+                        {trade.symbol || `Trade #${trade.id}`} · active position
+                      </a>
+                    ))}
+                  </span>
+                ) : tradeIds.length > 0 ? (
+                  <span className="filled-trade-unavailable">Linked trade legs are not currently open.</span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

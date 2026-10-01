@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 from config import get_settings
 from database import get_db, engine, Base, SessionLocal
-from models import Trade, Position, AgentMetrics, MarketData, AgentName, TradeType
+from models import Trade, Position, AgentMetrics, MarketData, AgentName, TradeType, PaperLimitOrder, ManualPaperOrder
 from agents.stocks import StocksAgent
 from agents.sensex import SensexAgent
 from agents.options import OptionsAgent
@@ -76,6 +76,25 @@ from trading.runtime_support import (
     daily_trade_review,
     exchange_session_status,
     load_indian_exchange_calendar,
+)
+from trading.paper_limit_orders import (
+    PaperOrderError,
+    create_order,
+    list_orders,
+    cancel_order,
+    serialize_order,
+    process_pending_orders,
+    manual_order_for_trade,
+)
+from trading.manual_paper_orders import (
+    ManualOrderError,
+    create_manual_order,
+    serialize_manual_order,
+    list_manual_orders,
+    cancel_manual_order,
+    manual_order_for_trade as general_manual_order_for_trade,
+    process_manual_orders,
+    manual_holding_decision,
 )
 try:
     from data.oanda_costs import OandaCostMetadataProvider
@@ -600,6 +619,11 @@ def _cached_trade_mark(trade):
 
 def _monitor_open_trade(db, trade, agent_name):
     now_utc = datetime.now(timezone.utc)
+    general_manual_order = general_manual_order_for_trade(db, trade.id)
+    manual_gold_order = (
+        (manual_order_for_trade(db, trade.id) or general_manual_order)
+        if agent_name == "XAUUSD" else None
+    )
     entry_event_time = _provider_time(
         getattr(trade, "entry_data_timestamp", None)
     ) if agent_name == "XAUUSD" else None
@@ -623,6 +647,12 @@ def _monitor_open_trade(db, trade, agent_name):
         now=now_utc,
         holding_intent=holding_intent,
     )
+    if general_manual_order:
+        holding = manual_holding_decision(
+            general_manual_order,
+            _provider_time(trade.entry_data_timestamp) or _provider_time(trade.created_at),
+            now_utc,
+        )
     gold_time_due = False
     gold_session_exit_due = False
     gold_deadline = None
@@ -632,7 +662,7 @@ def _monitor_open_trade(db, trade, agent_name):
             created_utc + timedelta(minutes=25) if created_utc is not None else None
         )
         gold_time_due = bool(gold_deadline and now_utc >= gold_deadline)
-        gold_session_exit_due = bool(
+        gold_session_exit_due = not manual_gold_order and bool(
             agents_map["XAUUSD"].should_force_research_time_exit(now_utc)
         )
     if not trade.data_source or not trade.entry_data_timestamp:
@@ -668,7 +698,10 @@ def _monitor_open_trade(db, trade, agent_name):
         observed_exit_time = current_quote.get("provider_timestamp") or current_quote.get("timestamp")
         hard_exit_due = (
             hard_exit_due
-            or agents_map["XAUUSD"].should_force_research_time_exit(observed_exit_time)
+            or (
+                not manual_gold_order
+                and agents_map["XAUUSD"].should_force_research_time_exit(observed_exit_time)
+            )
         )
         try:
             parsed_exit_time = datetime.fromisoformat(
@@ -737,7 +770,7 @@ def _monitor_open_trade(db, trade, agent_name):
     )
     trade.status = "CLOSED"
     db.commit()
-    if agent_name == "OPTIONS":
+    if agent_name == "OPTIONS" and not general_manual_order:
         agents_map[agent_name].close_paper_position(trade.symbol)
     if agent_name == "SENSEX_OPTIONS_SCALPING":
         gross_pnl = _trade_gross_pnl(
@@ -761,7 +794,12 @@ def _monitor_open_trade(db, trade, agent_name):
                 trade.closed_at
             )
     if agent_name == "XAUUSD":
-        agents_map["XAUUSD"].mark_research_position_closed()
+        # A split manual order remains open until its final leg closes. Also
+        # clear a restored agent position after both manual legs have exited.
+        if not manual_gold_order or db.query(Trade).filter(
+            Trade.agent == AgentName.XAUUSD, Trade.status == "OPEN"
+        ).first() is None:
+            agents_map["XAUUSD"].mark_research_position_closed()
     return (
         "TRADE_CLOSED",
         "Closed at a fresh provider quote"
@@ -867,6 +905,81 @@ def _gold_entries_for_utc_day(db, utc_day):
             and entry_time.date() == utc_day
         )
     ]
+
+
+def _manual_gold_entry_day(quote, now_utc):
+    """Daily caps follow the event that would fill, not processing-wall-clock day."""
+    event_time = _provider_time(
+        quote.get("provider_timestamp") or quote.get("timestamp")
+    ) if isinstance(quote, dict) else None
+    return (event_time or now_utc).date()
+
+
+def _manual_agent_name(order):
+    if order.market == "GOLD":
+        return "XAUUSD"
+    if order.market == "STOCKS":
+        return "STOCKS"
+    return "SENSEX_OPTIONS_SCALPING" if order.symbol == "SENSEX" else "OPTIONS"
+
+
+def _manual_order_quote(order):
+    """Resolve genuine cached quotes; the refreshers do all provider HTTP work."""
+    if order.market == "GOLD":
+        quote = getattr(onda_client, "latest_prices", {}).get("XAUUSD")
+        return dict(quote) if isinstance(quote, dict) else None
+    agent_name = _manual_agent_name(order)
+    if order.market == "STOCKS":
+        quote = _fresh_indian_quote(order.symbol)
+    else:
+        quote = dhan_client.get_option_quote(
+            order.symbol, order.strike, order.option_type, order.expiry,
+        )
+    if not isinstance(quote, dict):
+        return None
+    result = {
+        **quote,
+        "source": "DHAN",
+        "market_session_open": _market_hours_open(agent_name),
+    }
+    if order.market == "OPTIONS":
+        result["lot_size"] = _verified_option_lot_size(quote)
+        result["contract"] = {
+            "security_id": quote.get("security_id"),
+            "symbol": quote.get("symbol"),
+            "strike": quote.get("strike"),
+            "option_type": quote.get("option_type"),
+            "expiry": quote.get("expiry"),
+            "exchange_segment": quote.get("segment"),
+        }
+    return result
+
+
+def _manual_available_capital(db, order):
+    if order.market == "GOLD":
+        return None  # USD risk bound, not an invented INR margin requirement.
+    agent_name = _manual_agent_name(order)
+    allocation = (
+        settings.ALLOCATION_STOCKS if agent_name == "STOCKS"
+        else settings.ALLOCATION_SENSEX if agent_name == "SENSEX_OPTIONS_SCALPING"
+        else settings.ALLOCATION_OPTIONS
+    )
+    committed = sum(
+        float(trade.entry_price) * float(trade.quantity)
+        for trade in db.query(Trade).filter(
+            Trade.agent == AgentName[agent_name], Trade.status == "OPEN"
+        ).all()
+    )
+    return max(0.0, float(allocation) - committed)
+
+
+def _has_manual_pending(db, agent_name, symbol):
+    return any(
+        order.symbol == symbol and _manual_agent_name(order) == agent_name
+        for order in db.query(ManualPaperOrder).filter(
+            ManualPaperOrder.status == "PENDING"
+        ).all()
+    )
 
 
 def _restore_gold_runtime_state(db, now_utc):
@@ -1235,6 +1348,17 @@ async def lifespan(app: FastAPI):
                     if contract and trade.symbol in _OPTION_UNDERLYINGS:
                         requests.add((trade.symbol, contract["expiry"]))
                         contracts.setdefault(trade.symbol, []).append(contract)
+                for pending in chain_db.query(ManualPaperOrder).filter(
+                    ManualPaperOrder.market == "OPTIONS",
+                    ManualPaperOrder.status == "PENDING",
+                ).all():
+                    if pending.symbol in _OPTION_UNDERLYINGS:
+                        requests.add((pending.symbol, pending.expiry))
+                        contracts.setdefault(pending.symbol, []).append({
+                            "strike": pending.strike,
+                            "option_type": pending.option_type,
+                            "expiry": pending.expiry,
+                        })
             for symbol, expiry in sorted(requests, key=lambda item: (item[0], item[1] or "")):
                 security_id = _OPTION_UNDERLYINGS[symbol]
                 try:
@@ -1350,6 +1474,37 @@ async def lifespan(app: FastAPI):
                     xau_observation_recorder.record, [xau_quote] if xau_fresh else []
                 )
 
+                # A pending order is not a trade. Only this processor can turn
+                # it into two real-quote paper legs, in one DB transaction.
+                if settings.PAPER_TRADING_ENABLED and "XAUUSD" in PAPER_EXPERIMENTAL_AGENTS:
+                    try:
+                        order_now = datetime.now(timezone.utc)
+                        filled = process_pending_orders(
+                            db,
+                            xau_quote,
+                            now=order_now,
+                            accepted_entries_today=len(
+                                _gold_entries_for_utc_day(
+                                    db, _manual_gold_entry_day(xau_quote, order_now)
+                                )
+                            ),
+                        )
+                        if filled["filled_order_ids"]:
+                            logger.info(
+                                "Manual Gold PAPER limit orders filled from fresh provider quotes: %s",
+                                filled["filled_order_ids"],
+                            )
+                        process_manual_orders(
+                            db, _manual_order_quote, now=order_now,
+                            gold_entries_today=len(_gold_entries_for_utc_day(
+                                db, _manual_gold_entry_day(xau_quote, order_now)
+                            )),
+                            available_capital=lambda order: _manual_available_capital(db, order),
+                        )
+                    except Exception:
+                        db.rollback()
+                        logger.warning("Manual paper order processing failed safely; no synthetic fill")
+
                 open_trade_statuses = {}
                 open_trades = db.query(Trade).filter(Trade.status == "OPEN").all()
                 for existing_trade in open_trades:
@@ -1399,6 +1554,21 @@ async def lifespan(app: FastAPI):
                         live_data = xau_quote if agent_name == "XAUUSD" else indian_quotes.get(symbol)
                         if (agent_name, symbol) in open_trade_statuses:
                             symbol_statuses.extend(open_trade_statuses[(agent_name, symbol)])
+                            continue
+
+                        if agent_name == "XAUUSD" and db.query(PaperLimitOrder).filter(
+                            PaperLimitOrder.status == "PENDING"
+                        ).first() is not None:
+                            symbol_statuses.append((
+                                "PENDING_MANUAL_ORDER",
+                                "Waiting for the user-requested paper SELL limit; automatic Gold entries paused",
+                            ))
+                            continue
+                        if _has_manual_pending(db, agent_name, symbol):
+                            symbol_statuses.append((
+                                "PENDING_MANUAL_ORDER",
+                                "User-requested paper order is pending; automatic entries paused for this instrument",
+                            ))
                             continue
 
                         if (
@@ -2409,6 +2579,71 @@ async def get_agents_performance(db: Session = Depends(get_db)):
 
     return result
 
+@app.get("/paper/orders")
+async def get_paper_orders(db: Session = Depends(get_db)):
+    orders = list_orders(db) + list_manual_orders(db)
+    orders.sort(key=lambda order: order.get("created_at") or "", reverse=True)
+    return {"mode": "PAPER", "live_orders_enabled": False, "orders": orders}
+
+
+@app.get("/paper/order-config")
+async def get_paper_order_config():
+    return {
+        "mode": "PAPER",
+        "live_orders_enabled": False,
+        "markets": [
+            {"value": "GOLD", "label": "Gold · USD", "symbols": ["XAUUSD"]},
+            {"value": "STOCKS", "label": "Stocks · INR", "symbols": _AGENT_SYMBOLS["STOCKS"]},
+            {"value": "OPTIONS", "label": "Index options · INR", "symbols": list(_OPTION_UNDERLYINGS)},
+        ],
+        "risk_limits": {"GOLD": 150, "STOCKS": 1000, "OPTIONS": 1000},
+        "note": (
+            "Paper only. BUY/SELL Gold and intraday stocks; long CE/PE index options. "
+            "Whole option lots require verified contract metadata. Naked option selling "
+            "and multi-leg spreads are not enabled. Unknown OANDA fees remain unknown."
+        ),
+    }
+
+
+@app.post("/paper/orders")
+async def post_paper_order(payload: dict = Body(...), db: Session = Depends(get_db)):
+    if not settings.PAPER_TRADING_ENABLED:
+        raise HTTPException(status_code=403, detail="Paper execution is disabled")
+    if payload.get("mode", "PAPER") != "PAPER":
+        raise HTTPException(status_code=400, detail="Only PAPER orders are supported")
+    try:
+        if payload.get("market"):
+            market = payload["market"]
+            allowed = (
+                ["XAUUSD"] if market == "GOLD"
+                else _AGENT_SYMBOLS["STOCKS"] if market == "STOCKS"
+                else list(_OPTION_UNDERLYINGS) if market == "OPTIONS"
+                else []
+            )
+            if payload.get("symbol") not in allowed:
+                raise HTTPException(status_code=400, detail="Instrument is not in the supported provider registry")
+            return serialize_manual_order(create_manual_order(db, payload), db)
+        if "XAUUSD" not in PAPER_EXPERIMENTAL_AGENTS:
+            raise HTTPException(status_code=403, detail="Gold paper execution is disabled")
+        order = create_order(
+            db,
+            {**payload, "manual_order": True, "session_override": True},
+        )
+        return serialize_order(order, db)
+    except (PaperOrderError, ManualOrderError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@app.post("/paper/orders/{order_id}/cancel")
+async def post_cancel_paper_order(order_id: str, db: Session = Depends(get_db)):
+    try:
+        if order_id.startswith("manual-"):
+            return serialize_manual_order(cancel_manual_order(db, order_id), db)
+        return serialize_order(cancel_order(db, order_id), db)
+    except (PaperOrderError, ManualOrderError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
 @app.post("/market-data")
 async def ingest_market_data():
     raise HTTPException(
@@ -2427,6 +2662,9 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
     gold_quote = _gold_charge_quote()
     gold_cost_metadata = _gold_cost_metadata()
     for t in trades:
+        manual_order = (
+            manual_order_for_trade(db, t.id) if t.agent == AgentName.XAUUSD else None
+        ) or general_manual_order_for_trade(db, t.id)
         contract = parse_option_contract(t.option_strike)
         current_price = t.exit_price if t.status == "CLOSED" else None
         if t.status == "OPEN":
@@ -2456,6 +2694,16 @@ async def get_trades(agent: str = None, db: Session = Depends(get_db)):
 
         result.append({
             "id": t.id,
+            "paper_order_id": (
+                f"manual-{manual_order.id}" if isinstance(manual_order, ManualPaperOrder)
+                else manual_order.id if manual_order else None
+            ),
+            "paper_order_leg": (
+                "TP1" if manual_order and manual_order.first_trade_id == t.id
+                else "TP2" if manual_order
+                else None
+            ),
+            "entry_origin": "USER_MANUAL_PAPER_LIMIT" if manual_order else "AGENT_OR_LEGACY",
             "agent": t.agent.value,
             "symbol": t.symbol,
             "type": t.trade_type.value,

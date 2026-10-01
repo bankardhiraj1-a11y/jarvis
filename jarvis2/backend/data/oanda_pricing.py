@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 import requests
 
 
+class OandaCandleError(Exception):
+    """Sanitized failure while fetching read-only OANDA candle data."""
+
+
 class OandaPricingClient:
     MAX_QUOTE_AGE = 30
     HOSTS = {
@@ -161,6 +165,66 @@ class OandaPricingClient:
 
     def get_xauusd_price(self):
         return self.get_live_data().get("close")
+
+    def get_completed_candles(self, granularity, count):
+        """Fetch bounded XAU_USD bid/ask candles without account metadata or orders."""
+        if granularity not in ("M1", "M15", "H4"):
+            raise OandaCandleError("Unsupported OANDA candle granularity")
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 500:
+            raise OandaCandleError("OANDA candle count must be between 1 and 500")
+        if not self.access_token or not self.base_url:
+            raise OandaCandleError("OANDA candle credentials or environment are unavailable")
+
+        try:
+            response = self._session.get(
+                f"{self.base_url}/instruments/XAU_USD/candles",
+                headers={"Authorization": f"Bearer {self.access_token}", "Accept": "application/json"},
+                params={
+                    "granularity": granularity,
+                    "count": count,
+                    "price": "BA",
+                    "smooth": "false",
+                },
+                timeout=15,
+            )
+        except requests.RequestException:
+            raise OandaCandleError("OANDA candle request failed") from None
+        except Exception:
+            # Transport adapters must not leak request details or credentials.
+            raise OandaCandleError("OANDA candle request failed") from None
+
+        if response.status_code != 200:
+            raise OandaCandleError(f"OANDA candle request rejected (HTTP {response.status_code})")
+        try:
+            payload = response.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            raise OandaCandleError("OANDA candle response was not valid JSON") from None
+        except Exception:
+            raise OandaCandleError("OANDA candle response was not valid JSON") from None
+
+        if (
+            not isinstance(payload, dict)
+            or payload.get("instrument") != "XAU_USD"
+            or payload.get("granularity") != granularity
+            or not isinstance(payload.get("candles"), list)
+        ):
+            raise OandaCandleError("OANDA candle response failed provenance checks")
+
+        previous = None
+        for candle in payload["candles"]:
+            if not isinstance(candle, dict):
+                raise OandaCandleError("OANDA candle response contains an invalid candle")
+            if candle.get("instrument", "XAU_USD") != "XAU_USD":
+                raise OandaCandleError("OANDA candle instrument provenance mismatch")
+            if candle.get("granularity", granularity) != granularity:
+                raise OandaCandleError("OANDA candle granularity provenance mismatch")
+            stamp = self._timestamp(candle.get("time"))
+            if stamp is None:
+                raise OandaCandleError("OANDA candle timestamp is invalid")
+            if previous is not None and stamp <= previous:
+                raise OandaCandleError("OANDA candles are duplicate or non-chronological")
+            previous = stamp
+        return payload["candles"]
 
     def close(self):
         self._session.close()
