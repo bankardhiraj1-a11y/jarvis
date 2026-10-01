@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS 2 // Neural Trading Platform</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Electrolize&display=swap" rel="stylesheet">
+
+  <style>
+    * {
+      font-family: 'Electrolize', sans-serif;
+    }
+
+    body {
+      background: radial-gradient(ellipse at center, #0a0e27 0%, #050814 100%);
+      color: #e0e0ff;
+      overflow: hidden;
+    }
+
+    .cyber-border {
+      border: 2px solid #00f0ff;
+      box-shadow: 0 0 15px rgba(0, 240, 255, 0.4), inset 0 0 15px rgba(0, 240, 255, 0.1);
+    }
+
+    .cyber-border-purple {
+      border: 2px solid #a855f7;
+      box-shadow: 0 0 15px rgba(168, 85, 247, 0.3), inset 0 0 15px rgba(168, 85, 247, 0.05);
+    }
+
+    .neon-glow {
+      text-shadow: 0 0 10px #00f0ff, 0 0 20px #00a8ff;
+      color: #00f0ff;
+    }
+
+    .neon-glow-purple {
+      text-shadow: 0 0 10px #a855f7, 0 0 20px #d946ef;
+      color: #a855f7;
+    }
+
+    @keyframes pulse-neon {
+      0%, 100% { box-shadow: 0 0 15px rgba(0, 240, 255, 0.4), inset 0 0 15px rgba(0, 240, 255, 0.1); }
+      50% { box-shadow: 0 0 30px rgba(0, 240, 255, 0.8), inset 0 0 20px rgba(0, 240, 255, 0.2); }
+    }
+
+    .pulse-cyber {
+      animation: pulse-neon 3s infinite;
+    }
+
+    @keyframes float-neon {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-8px); }
+    }
+
+    .float-neon {
+      animation: float-neon 4s infinite ease-in-out;
+    }
+
+    @keyframes scan-line {
+      0% { top: 0; }
+      100% { top: 100%; }
+    }
+
+    .scan-effect::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(to bottom, rgba(0, 240, 255, 0.5), transparent);
+      animation: scan-line 3s linear infinite;
+    }
+
+    .hologram {
+      background: rgba(0, 240, 255, 0.05);
+      backdrop-filter: blur(10px);
+    }
+
+    .chart-container {
+      position: relative;
+      background: rgba(5, 8, 20, 0.8);
+    }
+
+    .market-ticker {
+      animation: drift-right 20s linear infinite;
+    }
+
+    @keyframes drift-right {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(0, 240, 255, 0.05);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #00f0ff;
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+    }
+  </style>
+</head>
+<body class="h-screen overflow-hidden">
+
+  <!-- Holographic Header -->
+  <header class="cyber-border border-b border-l-0 border-r-0 border-t-0 px-6 py-3 flex items-center justify-between h-16">
+    <div class="flex items-center gap-4">
+      <div class="neon-glow text-2xl font-black">◆ JARVIS 2</div>
+      <div class="text-xs neon-glow-purple">NEURAL-FI TRADING PLATFORM • FUTURES 2025</div>
+    </div>
+    <div class="flex items-center gap-6 text-xs font-mono">
+      <div class="flex items-center gap-2">
+        <div class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
+        <span>AUTONOMOUS MODE</span>
+      </div>
+      <div class="cyber-border px-3 py-1" style="border: 1px solid #00f0ff;">
+        <span id="headerPnL" class="neon-glow">+0.00</span> • <span id="headerWinRate">0%</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Grid -->
+  <div class="flex gap-2 p-2 h-[calc(100vh-80px)]">
+
+    <!-- LEFT PANEL: Market Indexes & Trading Log -->
+    <div class="flex flex-col gap-2 w-64">
+
+      <!-- Market Indexes -->
+      <div class="cyber-border hologram p-4 flex-1 overflow-hidden">
+        <div class="text-xs neon-glow font-bold mb-3 uppercase tracking-widest">Market Indexes</div>
+        <div class="space-y-2 overflow-y-auto h-32">
+          <div class="flex justify-between items-center text-xs border-b border-cyan-500/20 pb-1">
+            <span>BTC Fut</span>
+            <span class="font-mono font-bold" id="idx-BTC">0.00</span>
+            <span class="text-emerald-400">+0.00%</span>
+          </div>
+          <div class="flex justify-between items-center text-xs border-b border-cyan-500/20 pb-1">
+            <span>ETH Fut</span>
+            <span class="font-mono font-bold" id="idx-ETH">0.00</span>
+            <span class="text-emerald-400">+0.00%</span>
+          </div>
+          <div class="flex justify-between items-center text-xs border-b border-cyan-500/20 pb-1">
+            <span>SOL Fut</span>
+            <span class="font-mono font-bold" id="idx-SOL">0.00</span>
+            <span class="text-emerald-400">+0.00%</span>
+          </div>
+          <div class="flex justify-between items-center text-xs border-b border-cyan-500/20 pb-1">
+            <span>NIFTY</span>
+            <span class="font-mono font-bold" id="idx-NIFTY">0.00</span>
+            <span class="text-red-500">-0.00%</span>
+          </div>
+          <div class="flex justify-between items-center text-xs border-b border-cyan-500/20 pb-1">
+            <span>XAUUSD</span>
+            <span class="font-mono font-bold" id="idx-XAUUSD">0.00</span>
+            <span class="text-emerald-400">+0.00%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Trade History / Activity Log -->
+      <div class="cyber-border hologram p-4 flex-1 overflow-hidden flex flex-col">
+        <div class="text-xs neon-glow font-bold mb-3 uppercase tracking-widest">Live Activity</div>
+        <div id="activityLog" class="overflow-y-auto text-[10px] space-y-1 flex-1">
+          <div class="text-cyan-500/50">Initializing neural consensus...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER PANEL: Master Chart & Neural Visualization -->
+    <div class="flex-1 flex flex-col gap-2">
+
+      <!-- Main Candlestick Chart -->
+      <div class="cyber-border hologram p-4 flex-[2] relative overflow-hidden">
+        <div class="absolute top-4 left-4 text-xs neon-glow font-bold uppercase tracking-widest">BTC/USD CHART · 15M</div>
+        <canvas id="masterChart" class="w-full h-full"></canvas>
+        <div class="absolute bottom-2 right-4 text-[10px] text-cyan-500/60 font-mono">Powered by Neural-AI</div>
+      </div>
+
+      <!-- Neural Network Visualization -->
+      <div class="cyber-border-purple hologram p-4 flex-1 relative overflow-hidden flex items-center justify-center">
+        <div class="absolute top-4 left-4 text-xs neon-glow-purple font-bold uppercase tracking-widest">Neural Consensus</div>
+        <svg class="w-full h-full" viewBox="0 0 300 150">
+          <!-- Agent nodes -->
+          <circle cx="30" cy="40" r="8" fill="#00f0ff" opacity="0.8"></circle>
+          <circle cx="30" cy="75" r="8" fill="#00f0ff" opacity="0.8"></circle>
+          <circle cx="30" cy="110" r="8" fill="#00f0ff" opacity="0.8"></circle>
+
+          <!-- Central processor -->
+          <circle cx="150" cy="75" r="12" fill="#a855f7" opacity="0.9" filter="url(#glow)"></circle>
+
+          <!-- Output node -->
+          <circle cx="270" cy="75" r="8" fill="#00f0ff" opacity="0.8"></circle>
+
+          <!-- Connecting lines -->
+          <line x1="38" y1="40" x2="138" y2="75" stroke="#00f0ff" stroke-width="1" opacity="0.4"></line>
+          <line x1="38" y1="75" x2="138" y2="75" stroke="#00f0ff" stroke-width="1" opacity="0.4"></line>
+          <line x1="38" y1="110" x2="138" y2="75" stroke="#00f0ff" stroke-width="1" opacity="0.4"></line>
+
+          <line x1="162" y1="75" x2="262" y2="75" stroke="#a855f7" stroke-width="1" opacity="0.4"></line>
+
+          <!-- Labels -->
+          <text x="10" y="45" font-size="10" fill="#00f0ff">STOCKS</text>
+          <text x="10" y="80" font-size="10" fill="#00f0ff">SENSEX</text>
+          <text x="10" y="115" font-size="10" fill="#00f0ff">OPTIONS</text>
+          <text x="135" y="65" font-size="9" fill="#a855f7">BOSS</text>
+          <text x="270" y="70" font-size="10" fill="#00f0ff">SIGNAL</text>
+
+          <defs>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="2" result="coloredBlur"></feGaussianBlur>
+              <feMerge>
+                <feMergeNode in="coloredBlur"></feMergeNode>
+                <feMergeNode in="SourceGraphic"></feMergeNode>
+              </feMerge>
+            </filter>
+          </defs>
+        </svg>
+      </div>
+    </div>
+
+    <!-- Trade Details Modal -->
+    <div id="tradeModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div class="cyber-border hologram p-4 max-w-2xl w-full max-h-96 overflow-y-auto">
+        <div class="flex justify-between items-center mb-3">
+          <div class="text-xs neon-glow font-bold uppercase tracking-widest">Trade Details</div>
+          <button onclick="closeTradeModal()" class="text-cyan-400 hover:text-cyan-300 text-lg">✕</button>
+        </div>
+        <div id="tradeModalContent" class="text-[8px] space-y-2">
+          <!-- Content will be populated by JavaScript -->
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL: Order Book, Positions, Health -->
+    <div class="flex flex-col gap-2 w-80">
+
+      <!-- Order Book / Live Quotes -->
+      <div class="cyber-border hologram p-3 flex-1 overflow-hidden flex flex-col">
+        <div class="text-xs neon-glow font-bold mb-2 uppercase tracking-widest">Futures Order Book</div>
+        <div class="text-[9px] font-mono space-y-1 flex-1 overflow-y-auto">
+          <div class="text-red-500 flex justify-between">
+            <span>ASK 68,500</span>
+            <span>2.5 BTC</span>
+          </div>
+          <div class="text-red-500 flex justify-between">
+            <span>ASK 68,450</span>
+            <span>5.2 BTC</span>
+          </div>
+          <div class="cyber-border-purple px-2 py-1 text-center text-xs mb-1 border-l-0 border-r-0">
+            <span id="markPrice" class="neon-glow-purple font-bold">68,432.50</span>
+          </div>
+          <div class="text-emerald-400 flex justify-between">
+            <span>BID 68,400</span>
+            <span>4.8 BTC</span>
+          </div>
+          <div class="text-emerald-400 flex justify-between">
+            <span>BID 68,350</span>
+            <span>3.1 BTC</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Open Positions / Charges Tab -->
+      <div class="cyber-border hologram p-3 flex-1 overflow-hidden flex flex-col">
+        <!-- Tab Selector -->
+        <div class="flex gap-1 mb-2 border-b border-cyan-500/20 pb-2 overflow-x-auto">
+          <button id="tabPositions" onclick="switchTab('positions')" class="text-xs neon-glow font-bold uppercase tracking-widest px-2 py-1 border-b-2 border-cyan-500 whitespace-nowrap">Positions</button>
+          <button id="tabCharges" onclick="switchTab('charges')" class="text-xs neon-glow font-bold uppercase tracking-widest px-2 py-1 border-b-2 border-transparent hover:border-cyan-500/50 whitespace-nowrap">Charges</button>
+          <button id="tabTrades" onclick="switchTab('trades')" class="text-xs neon-glow font-bold uppercase tracking-widest px-2 py-1 border-b-2 border-transparent hover:border-cyan-500/50 whitespace-nowrap">Trades</button>
+          <button id="tabSummary" onclick="switchTab('summary')" class="text-xs neon-glow font-bold uppercase tracking-widest px-2 py-1 border-b-2 border-transparent hover:border-cyan-500/50 whitespace-nowrap">Summary</button>
+        </div>
+
+        <!-- Positions Tab -->
+        <div id="positionsTab" class="text-[9px] space-y-2 overflow-y-auto flex-1">
+          <div id="positionsContainer" class="text-slate-500 text-center">No active positions</div>
+        </div>
+
+        <!-- Charges Tab (Hidden by default) -->
+        <div id="chargesTab" class="text-[9px] space-y-2 overflow-y-auto flex-1 hidden">
+          <div id="chargesContainer" class="text-slate-500 text-center">Loading charges data...</div>
+        </div>
+
+        <!-- Trades Tab (Detailed table with all trade info + charges) -->
+        <div id="tradesTab" class="text-[7px] overflow-auto flex-1 hidden">
+          <div id="tradesTableContainer" class="text-slate-500 text-center">Loading trades...</div>
+        </div>
+
+        <!-- Summary Tab (Agent-wise charges breakdown) -->
+        <div id="summaryTab" class="text-[8px] space-y-1 overflow-y-auto flex-1 hidden">
+          <div id="summaryContainer" class="text-slate-500 text-center">Loading summary...</div>
+        </div>
+      </div>
+
+      <!-- Algorithmic Health -->
+      <div class="cyber-border-purple hologram p-3 flex-1 overflow-hidden flex flex-col">
+        <div class="text-xs neon-glow-purple font-bold mb-2 uppercase tracking-widest">Algorithmic Health</div>
+        <div class="space-y-2 text-[9px] flex-1 flex flex-col justify-around">
+          <div>
+            <div class="flex justify-between mb-1">
+              <span>Consensus</span>
+              <span id="healthConsensus" class="neon-glow">85.2%</span>
+            </div>
+            <div class="h-1.5 cyber-border" style="border-width: 1px;">
+              <div class="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all" style="width: 85%"></div>
+            </div>
+          </div>
+          <div>
+            <div class="flex justify-between mb-1">
+              <span>Win Rate</span>
+              <span id="healthWinRate" class="text-emerald-400">68.5%</span>
+            </div>
+            <div class="h-1.5 cyber-border" style="border-width: 1px;">
+              <div class="h-full bg-emerald-500 transition-all" style="width: 68%"></div>
+            </div>
+          </div>
+          <div>
+            <div class="flex justify-between mb-1">
+              <span>Risk/Reward</span>
+              <span id="healthRiskReward" class="text-cyan-400">2.1:1</span>
+            </div>
+            <div class="h-1.5 cyber-border" style="border-width: 1px;">
+              <div class="h-full bg-cyan-500 transition-all" style="width: 64%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:8000';
+    let appState = {
+      portfolio: {},
+      positions: [],
+      agents: [],
+      optimizer: null,
+      trades: []
+    };
+
+    // Canvas Chart Renderer
+    const canvas = document.getElementById('masterChart');
+    const ctx = canvas.getContext('2d');
+
+    function resizeCanvas() {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      drawChart();
+    }
+
+    function drawChart() {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.fillStyle = 'rgba(5, 8, 20, 0.5)';
+      ctx.fillRect(0, 0, w, h);
+
+      // Grid
+      ctx.strokeStyle = 'rgba(0, 240, 255, 0.1)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        const y = (h / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      // Fake price data visualization
+      ctx.strokeStyle = '#00f0ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const basePrice = 68400;
+      for (let x = 0; x < w; x += 20) {
+        const variation = Math.sin(x * 0.02) * 200 + Math.random() * 100;
+        const y = h / 2 - (variation / 500) * h / 2;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // MA indicators
+      ctx.strokeStyle = 'rgba(168, 85, 247, 0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let x = 0; x < w; x += 20) {
+        const variation = Math.sin(x * 0.015) * 150;
+        const y = h / 2 - (variation / 400) * h / 2;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Volume bars
+      ctx.fillStyle = 'rgba(0, 240, 255, 0.2)';
+      for (let x = 0; x < w; x += 40) {
+        const vol = Math.random() * (h / 3);
+        ctx.fillRect(x, h - vol, 20, vol);
+      }
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // Fetch backend data
+    async function fetchData() {
+      try {
+        const [port, agents, opt, trades] = await Promise.all([
+          fetch(`${API_BASE}/portfolio`).then(r => r.json()).catch(() => ({})),
+          fetch(`${API_BASE}/agents/performance`).then(r => r.json()).catch(() => ({})),
+          fetch(`${API_BASE}/optimizer/status`).then(r => r.json()).catch(() => ({})),
+          fetch(`${API_BASE}/trades`).then(r => r.json()).catch(() => [])
+        ]);
+
+        appState.portfolio = port;
+        // Extract open positions from trades
+        appState.positions = trades.filter(t => t.status === 'OPEN').map(t => ({
+          symbol: t.symbol,
+          agent: t.agent,
+          qty: t.quantity,
+          entryPrice: t.entry_price,
+          pnl: t.pnl,
+          grossPnl: t.gross_pnl,
+          charges: t.charges_info?.total_charges || 0
+        }));
+        appState.optimizer = opt;
+        appState.trades = trades;
+
+        // Convert agent object to array
+        if (typeof agents === 'object' && !Array.isArray(agents)) {
+          appState.agents = Object.entries(agents).map(([name, stats]) => ({
+            name,
+            winRate: stats.win_rate || 0,
+            pnl: stats.total_pnl || 0,
+            trades: stats.total_trades || 0
+          }));
+        } else {
+          appState.agents = agents;
+        }
+
+        updateUI();
+      } catch (err) {
+        console.error('Fetch error:', err);
+      }
+    }
+
+    let currentTab = 'positions';
+
+    function openTradeModal(trade) {
+      const modal = document.getElementById('tradeModal');
+      const content = document.getElementById('tradeModalContent');
+
+      const chargesBreakdown = trade.charges || {};
+      const chargesInfo = trade.charges_info || {};
+
+      content.innerHTML = `
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Left Column -->
+          <div class="space-y-2 border-r border-cyan-500/20 pr-3">
+            <div class="text-cyan-400 font-bold">${trade.symbol} • ${trade.agent}</div>
+            <div class="text-slate-300">
+              <div class="flex justify-between">
+                <span>Signal:</span>
+                <span class="${trade.signal === 'BUY' ? 'text-emerald-400' : 'text-red-500'} font-bold">${trade.signal}</span>
+              </div>
+              <div class="flex justify-between">
+                <span>Quantity:</span>
+                <span class="text-cyan-400">${trade.quantity}</span>
+              </div>
+            </div>
+
+            <div class="border-t border-cyan-500/20 pt-2">
+              <div class="text-cyan-400 font-bold text-[7px] mb-1">PRICES</div>
+              <div class="text-slate-300 space-y-1">
+                <div class="flex justify-between">
+                  <span>Entry:</span>
+                  <span class="font-mono">${trade.entry_price.toFixed(2)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Current:</span>
+                  <span class="font-mono">${trade.current_price.toFixed(2)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>SL:</span>
+                  <span class="text-red-400 font-mono">${trade.stop_loss.toFixed(2)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>TP:</span>
+                  <span class="text-emerald-400 font-mono">${trade.take_profit.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-cyan-500/20 pt-2">
+              <div class="text-cyan-400 font-bold text-[7px] mb-1">TIMING</div>
+              <div class="text-slate-300 text-[7px]">
+                <div>${new Date(trade.entry_time).toLocaleString()}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Charges & P&L -->
+          <div class="space-y-2">
+            <div class="border-b border-cyan-500/20 pb-2">
+              <div class="text-cyan-400 font-bold text-[7px] mb-1">P&L BREAKDOWN</div>
+              <div class="text-slate-300 space-y-1">
+                <div class="flex justify-between">
+                  <span>Gross P&L:</span>
+                  <span class="font-mono ${trade.gross_pnl >= 0 ? 'text-emerald-400' : 'text-red-500'}">${trade.gross_pnl >= 0 ? '+' : ''}${trade.gross_pnl.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-b border-cyan-500/20 pb-2">
+              <div class="text-red-400 font-bold text-[7px] mb-1">CHARGES (${chargesInfo.segment || 'N/A'})</div>
+              <div class="text-slate-300 space-y-0.5 text-[7px]">
+                <div class="flex justify-between">
+                  <span>Entry Charges:</span>
+                  <span class="font-mono">-${(chargesBreakdown.brokerage_entry || 0).toFixed(2)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Exit Charges:</span>
+                  <span class="font-mono">-${(chargesBreakdown.brokerage_exit || 0).toFixed(2)}</span>
+                </div>
+                ${chargesBreakdown.stt ? `<div class="flex justify-between">
+                  <span>STT:</span>
+                  <span class="font-mono">-${chargesBreakdown.stt.toFixed(2)}</span>
+                </div>` : ''}
+                ${chargesBreakdown.gst ? `<div class="flex justify-between">
+                  <span>GST:</span>
+                  <span class="font-mono">-${chargesBreakdown.gst.toFixed(2)}</span>
+                </div>` : ''}
+                <div class="flex justify-between font-bold border-t border-red-500/30 pt-1 mt-1">
+                  <span>Total Charges:</span>
+                  <span class="font-mono text-red-400">-${(chargesInfo.total_charges || 0).toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="text-emerald-400 font-bold text-[7px] mb-1">NET RESULT</div>
+              <div class="text-slate-300 space-y-1">
+                <div class="flex justify-between font-bold">
+                  <span>NET P&L:</span>
+                  <span class="font-mono text-lg ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-500'}">${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}</span>
+                </div>
+                <div class="flex justify-between">
+                  <span>Return %:</span>
+                  <span class="font-mono ${trade.pnl_percent >= 0 ? 'text-emerald-400' : 'text-red-500'}">${trade.pnl_percent.toFixed(2)}%</span>
+                </div>
+                ${chargesInfo.charge_ratio ? `<div class="flex justify-between text-slate-400">
+                  <span>Charge Ratio:</span>
+                  <span class="font-mono">${chargesInfo.charge_ratio.toFixed(3)}%</span>
+                </div>` : ''}
+                ${chargesInfo.breakeven ? `<div class="flex justify-between text-slate-400">
+                  <span>Breakeven:</span>
+                  <span class="font-mono">${chargesInfo.breakeven.toFixed(3)}</span>
+                </div>` : ''}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      modal.classList.remove('hidden');
+    }
+
+    function closeTradeModal() {
+      document.getElementById('tradeModal').classList.add('hidden');
+    }
+
+    function switchTab(tabName) {
+      currentTab = tabName;
+      document.getElementById('positionsTab').classList.toggle('hidden', tabName !== 'positions');
+      document.getElementById('chargesTab').classList.toggle('hidden', tabName !== 'charges');
+      document.getElementById('summaryTab').classList.toggle('hidden', tabName !== 'summary');
+
+      document.getElementById('tabPositions').classList.toggle('border-cyan-500', tabName === 'positions');
+      document.getElementById('tabPositions').classList.toggle('border-transparent', tabName !== 'positions');
+      document.getElementById('tabCharges').classList.toggle('border-cyan-500', tabName === 'charges');
+      document.getElementById('tabCharges').classList.toggle('border-transparent', tabName !== 'charges');
+      document.getElementById('tabSummary').classList.toggle('border-cyan-500', tabName === 'summary');
+      document.getElementById('tabSummary').classList.toggle('border-transparent', tabName !== 'summary');
+
+      if (tabName === 'charges') {
+        loadChargesData();
+      } else if (tabName === 'summary') {
+        loadSummaryData();
+      }
+    }
+
+    async function loadChargesData() {
+      try {
+        const response = await fetch('http://localhost:8000/active-trades-with-charges');
+        const data = await response.json();
+        const chargesContainer = document.getElementById('chargesContainer');
+
+        if (!data.trades || data.trades.length === 0) {
+          chargesContainer.innerHTML = '<div class="text-slate-500 text-center">No active trades</div>';
+          return;
+        }
+
+        chargesContainer.innerHTML = data.trades.map(trade => `
+          <div class="border-b border-cyan-500/20 pb-2 cursor-pointer hover:bg-cyan-500/5 p-1 rounded transition" onclick="openTradeModal(${JSON.stringify(trade).replace(/"/g, '&quot;')})">
+            <div class="flex justify-between font-bold items-start">
+              <div>
+                <span class="neon-glow">${trade.symbol}</span>
+                <span class="text-cyan-500/60 ml-1">${trade.agent}</span>
+              </div>
+              <span class="${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-500'}">${trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)}</span>
+            </div>
+            <div class="text-[7px] space-y-0.5 mt-1">
+              <div class="flex justify-between text-slate-400">
+                <span>Entry: ${trade.entry_price.toFixed(2)}</span>
+                <span>Current: ${trade.current_price.toFixed(2)}</span>
+              </div>
+              <div class="flex justify-between text-slate-400">
+                <span>Gross P&L: <span class="text-cyan-400">${trade.gross_pnl.toFixed(2)}</span></span>
+                <span>Charges: <span class="text-red-400">-${trade.charges_info.total_charges.toFixed(2)}</span></span>
+              </div>
+              <div class="flex justify-between ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-500'}">
+                <span>NET P&L: ${trade.pnl.toFixed(2)} (${trade.pnl_percent.toFixed(2)}%)</span>
+              </div>
+              <div class="text-[6px] text-cyan-400/60 mt-1">Click to view details</div>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        document.getElementById('chargesContainer').innerHTML = '<div class="text-red-500 text-center text-[8px]">Error loading charges</div>';
+        console.error('Charges fetch error:', err);
+      }
+    }
+
+    async function loadSummaryData() {
+      try {
+        const response = await fetch('http://localhost:8000/active-trades-with-charges');
+        const data = await response.json();
+
+        if (!data.trades || data.trades.length === 0) {
+          document.getElementById('summaryContainer').innerHTML = '<div class="text-slate-500 text-center">No active trades</div>';
+          return;
+        }
+
+        // Group trades by agent
+        const agentData = {};
+        data.trades.forEach(trade => {
+          if (!agentData[trade.agent]) {
+            agentData[trade.agent] = {
+              agent: trade.agent,
+              totalTrades: 0,
+              grossPnL: 0,
+              totalCharges: 0,
+              netPnL: 0,
+              avgChargesPerTrade: 0,
+              chargeRatio: 0
+            };
+          }
+          agentData[trade.agent].totalTrades++;
+          agentData[trade.agent].grossPnL += trade.gross_pnl || 0;
+          agentData[trade.agent].totalCharges += trade.charges_info?.total_charges || 0;
+          agentData[trade.agent].netPnL += trade.pnl || 0;
+        });
+
+        // Calculate averages
+        Object.keys(agentData).forEach(agent => {
+          const stats = agentData[agent];
+          if (stats.totalTrades > 0) {
+            stats.avgChargesPerTrade = stats.totalCharges / stats.totalTrades;
+            stats.chargeRatio = (stats.totalCharges / stats.grossPnL) * 100;
+          }
+        });
+
+        // Sort by net P&L (descending)
+        const sortedAgents = Object.values(agentData).sort((a, b) => b.netPnL - a.netPnL);
+
+        const summaryContainer = document.getElementById('summaryContainer');
+        summaryContainer.innerHTML = `
+          <div class="border-b border-cyan-500/20 pb-1 mb-1">
+            <div class="text-[7px] font-bold text-cyan-400 grid grid-cols-5 gap-1">
+              <span>Agent</span>
+              <span class="text-right">Trades</span>
+              <span class="text-right">Gross</span>
+              <span class="text-right">Chg</span>
+              <span class="text-right">NET</span>
+            </div>
+          </div>
+          ${sortedAgents.map(agent => `
+            <div class="border-b border-cyan-500/10 pb-0.5">
+              <div class="text-[7px] grid grid-cols-5 gap-1">
+                <span class="neon-glow font-bold">${agent.agent}</span>
+                <span class="text-center text-slate-300">${agent.totalTrades}</span>
+                <span class="text-right ${agent.grossPnL >= 0 ? 'text-emerald-400' : 'text-red-500'}">${agent.grossPnL.toFixed(0)}</span>
+                <span class="text-right text-red-400">-${agent.totalCharges.toFixed(0)}</span>
+                <span class="text-right font-bold ${agent.netPnL >= 0 ? 'text-emerald-400' : 'text-red-500'}">${agent.netPnL.toFixed(0)}</span>
+              </div>
+              <div class="text-[6px] text-slate-400 mt-0.5">
+                <span>Avg Chg: ${agent.avgChargesPerTrade.toFixed(1)} | Ratio: ${agent.chargeRatio.toFixed(2)}%</span>
+              </div>
+            </div>
+          `).join('')}
+          <div class="border-t border-cyan-500/30 pt-1 mt-1">
+            <div class="text-[7px] font-bold text-cyan-400 grid grid-cols-5 gap-1">
+              <span>TOTAL</span>
+              <span class="text-center">${data.total_open_trades}</span>
+              <span class="text-right text-emerald-400">${sortedAgents.reduce((s, a) => s + a.grossPnL, 0).toFixed(0)}</span>
+              <span class="text-right text-red-400">-${sortedAgents.reduce((s, a) => s + a.totalCharges, 0).toFixed(0)}</span>
+              <span class="text-right text-emerald-400">${sortedAgents.reduce((s, a) => s + a.netPnL, 0).toFixed(0)}</span>
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        document.getElementById('summaryContainer').innerHTML = '<div class="text-red-500 text-center text-[8px]">Error loading summary</div>';
+        console.error('Summary fetch error:', err);
+      }
+    }
+
+    function updateUI() {
+      // Header metrics
+      document.getElementById('headerPnL').textContent = (appState.portfolio.totalPnL || 0).toFixed(2);
+      document.getElementById('headerWinRate').textContent = (appState.portfolio.winRate || 0).toFixed(1) + '%';
+
+      // Market indexes (mock for now, replace with real data)
+      document.getElementById('idx-BTC').textContent = '68,432.50';
+      document.getElementById('idx-ETH').textContent = '3,542.10';
+      document.getElementById('idx-SOL').textContent = '182.75';
+      document.getElementById('idx-NIFTY').textContent = '24,850.00';
+      document.getElementById('idx-XAUUSD').textContent = '2,485.50';
+
+      // Positions
+      const posContainer = document.getElementById('positionsContainer');
+      if (appState.positions.length === 0) {
+        posContainer.innerHTML = '<div class="text-slate-500 text-center">No active positions</div>';
+      } else {
+        posContainer.innerHTML = appState.positions.map(pos => `
+          <div class="border-b border-cyan-500/20 pb-2">
+            <div class="flex justify-between font-bold">
+              <span class="neon-glow">${pos.symbol}</span>
+              <span class="${pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-500'}">${pos.pnl >= 0 ? '+' : ''}${pos.pnl?.toFixed(2) || 0}</span>
+            </div>
+            <div class="flex justify-between text-[8px] text-slate-400">
+              <span>${pos.agent}</span>
+              <span>${pos.qty} • ${pos.entryPrice?.toFixed(2) || '--'}</span>
+            </div>
+            <div class="text-[7px] text-cyan-400 mt-1">
+              Go to CHARGES tab to view charges
+            </div>
+          </div>
+        `).join('');
+      }
+
+      // Activity log
+      const log = document.getElementById('activityLog');
+      if (appState.trades.length > 0) {
+        log.innerHTML = appState.trades.slice(0, 10).map(t => {
+          const time = new Date(t.time).toLocaleTimeString();
+          return `
+            <div class="border-l-2 border-cyan-500 pl-2 pb-1">
+              <div class="text-cyan-400 text-[9px]">[${time}] ${t.symbol}</div>
+              <div class="text-${t.pnl >= 0 ? 'emerald' : 'red'}-400 text-[9px]">${t.pnl >= 0 ? '+' : ''}${t.pnl?.toFixed(2) || 0} INR</div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Health metrics
+      const consensus = (appState.optimizer?.consensus_score || 0.85) * 100;
+      const winRate = (appState.portfolio.winRate || 68.5);
+      document.getElementById('healthConsensus').textContent = consensus.toFixed(1) + '%';
+      document.getElementById('healthWinRate').textContent = winRate.toFixed(1) + '%';
+      document.querySelectorAll('[data-bar]').forEach(bar => {
+        if (bar.dataset.bar === 'consensus') bar.style.width = consensus + '%';
+        if (bar.dataset.bar === 'win') bar.style.width = winRate + '%';
+      });
+    }
+
+    // Initialize
+    fetchData();
+    setInterval(fetchData, 1000);
+
+    // Lucide icons
+    lucide.createIcons();
+  </script>
+</body>
+</html>

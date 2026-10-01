@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Jarvis 2 Trading Dashboard"
+description = "The imported Jarvis 2 React dashboard for viewing portfolio, trades, and agent status against its local paper-trading API."
+version = "1.0.0"
+id = "artifacts/jarvis2"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/", "/jarvis2-api", "/jarvis2-api/ws" ]
+localPort = 19032
+
+[services.development]
+run = "pnpm --filter @workspace/jarvis2 run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/jarvis2", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/jarvis2/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19032"
+BASE_PATH = "/"

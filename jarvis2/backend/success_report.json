@@ -1,0 +1,13 @@
+{
+  "status": "SUCCESS",
+  "cycles": 10,
+  "target_achieved": true,
+  "timestamp": "2026-09-23T19:29:25.385674",
+  "agents": {
+    "STOCKS": 90.0,
+    "SENSEX": 90.0,
+    "OPTIONS": 90.0,
+    "XAUUSD": 90.0,
+    "SENSEX_SCALPING": 90.0
+  }
+}

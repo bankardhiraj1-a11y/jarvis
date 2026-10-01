@@ -1,0 +1,27 @@
+{
+  "date": "2026-09-22",
+  "agent": "STOCKS",
+  "trades": 1,
+  "wins": 1,
+  "losses": 0,
+  "win_rate": 100.0,
+  "total_pnl": 200,
+  "avg_win": 200,
+  "avg_loss": 0,
+  "action": {
+    "type": "MAINTAIN",
+    "reason": "Win rate 100.00% meets or exceeds target",
+    "details": "Strategy performing well"
+  },
+  "trades_detail": [
+    {
+      "entry": "BUY",
+      "pnl": 200,
+      "pnl_pct": 0.7,
+      "signal": "Momentum",
+      "entry_time": "09:30",
+      "exit_time": "11:00"
+    }
+  ],
+  "timestamp": "2026-09-22T12:28:30.224695"
+}

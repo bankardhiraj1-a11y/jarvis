@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JARVIS 2 // Neural-Fi Trading Terminal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <style>
+    * { font-family: 'JetBrains Mono', monospace; }
+    body {
+      background: linear-gradient(135deg, #0f1729 0%, #1a2332 50%, #0a0f1f 100%);
+      color: #b0d4ff;
+      overflow: hidden;
+    }
+
+    .cyber-panel {
+      background: rgba(15, 23, 41, 0.7);
+      border: 1.5px solid #00d9ff;
+      box-shadow: 0 0 20px rgba(0, 217, 255, 0.3), inset 0 0 20px rgba(0, 217, 255, 0.05);
+      backdrop-filter: blur(10px);
+    }
+
+    .neon-text {
+      color: #00d9ff;
+      text-shadow: 0 0 10px #00d9ff, 0 0 20px #0099ff;
+    }
+
+    .neon-text-green { color: #00ff88; text-shadow: 0 0 8px #00ff88; }
+    .neon-text-red { color: #ff3366; text-shadow: 0 0 8px #ff3366; }
+    .price-up { color: #00ff88; }
+    .price-down { color: #ff3366; }
+
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: rgba(0, 217, 255, 0.05); }
+    ::-webkit-scrollbar-thumb { background: #00d9ff; box-shadow: 0 0 8px rgba(0, 217, 255, 0.5); }
+  </style>
+</head>
+<body class="h-screen overflow-hidden">
+
+  <div class="cyber-panel border-b border-l-0 border-r-0 border-t-0 px-6 py-2 flex items-center justify-between h-14">
+    <div class="neon-text text-lg font-bold">◆ JARVIS 2 NEURAL-FI • FUTURES 2026 • APEX HUB</div>
+    <div class="flex gap-4 text-xs">
+      <span><span class="w-2 h-2 inline-block rounded-full bg-green-500 mr-1"></span>AUTONOMOUS</span>
+      <span id="headerTime" class="neon-text">--:--:--</span>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-24 gap-1 p-2 h-[calc(100vh-60px)]" style="grid-template-columns: repeat(24, minmax(0, 1fr));">
+
+    <!-- LEFT: Market Indexes (4 cols) -->
+    <div class="col-span-4 flex flex-col gap-1">
+      <div class="cyber-panel p-3 flex-1 overflow-hidden flex flex-col">
+        <div class="neon-text text-xs font-bold mb-2 uppercase">Market Indexes</div>
+        <div class="space-y-1 text-xs overflow-y-auto flex-1">
+          <div class="flex justify-between border-b border-cyan-900/30 pb-1">
+            <span>BTC Fut</span>
+            <span class="neon-text">68,380</span>
+            <span class="price-up">+0.12%</span>
+          </div>
+          <div class="flex justify-between border-b border-cyan-900/30 pb-1">
+            <span>ETH Fut</span>
+            <span class="neon-text">3,542</span>
+            <span class="price-up">+0.32%</span>
+          </div>
+          <div class="flex justify-between border-b border-cyan-900/30 pb-1">
+            <span>SPX Fut</span>
+            <span class="neon-text">5,830</span>
+            <span class="price-down">-0.08%</span>
+          </div>
+          <div class="flex justify-between border-b border-cyan-900/30 pb-1">
+            <span>NQ Fut</span>
+            <span class="neon-text">20,180</span>
+            <span class="price-up">+0.22%</span>
+          </div>
+          <div class="flex justify-between">
+            <span>XAUUSD</span>
+            <span class="neon-text">2,485</span>
+            <span class="price-down">-0.05%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cyber-panel p-3 flex-1 overflow-hidden flex flex-col">
+        <div class="neon-text text-xs font-bold mb-2 uppercase">Watchlist</div>
+        <div class="space-y-1 text-xs overflow-y-auto flex-1">
+          <div class="bg-blue-900/30 p-1 rounded text-xs">BTC Fut</div>
+          <div class="bg-blue-900/30 p-1 rounded text-xs">ETH Fut</div>
+          <div class="bg-blue-900/30 p-1 rounded text-xs">SPX Fut</div>
+        </div>
+      </div>
+
+      <div class="cyber-panel p-2 flex-1 overflow-hidden"><canvas id="indexChart" width="100" height="100"></canvas></div>
+
+      <div class="cyber-panel p-3 flex-1 overflow-hidden">
+        <div class="neon-text text-xs font-bold mb-2 uppercase">Risk ING</div>
+        <div class="space-y-1 text-[9px]">
+          <div class="flex justify-between"><span>BTC FUT</span><span>18.50</span><span class="price-up">+0.41%</span></div>
+          <div class="flex justify-between"><span>ETH FUT</span><span>13.00</span><span class="price-up">+1.07%</span></div>
+          <div class="flex justify-between"><span>SPX FUT</span><span>23.00</span><span class="price-down">-1.14%</span></div>
+          <div class="flex justify-between"><span>NQ FUT</span><span>33.50</span><span class="price-down">-2.14%</span></div>
+          <div class="flex justify-between"><span>XAU FUT</span><span>33.00</span><span class="price-down">-1.31%</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER-LEFT: Neural & Charts (8 cols) -->
+    <div class="col-span-8 flex flex-col gap-1">
+      <div class="cyber-panel p-3 h-24 flex items-center justify-center">
+        <svg width="100%" height="100%" viewBox="0 0 300 100">
+          <text x="150" y="20" text-anchor="middle" fill="#00d9ff" font-size="10">NEURAL PREDICTIVE MODEL</text>
+          <circle cx="30" cy="50" r="6" fill="#00d9ff"></circle>
+          <circle cx="60" cy="40" r="6" fill="#00d9ff"></circle>
+          <circle cx="60" cy="60" r="6" fill="#00d9ff"></circle>
+          <circle cx="150" cy="50" r="10" fill="#a855f7"></circle>
+          <circle cx="240" cy="50" r="6" fill="#00d9ff"></circle>
+          <line x1="36" y1="50" x2="140" y2="50" stroke="#00d9ff" stroke-width="1" opacity="0.4"></line>
+          <line x1="60" y1="40" x2="140" y2="50" stroke="#00d9ff" stroke-width="1" opacity="0.4"></line>
+          <line x1="60" y1="60" x2="140" y2="50" stroke="#00d9ff" stroke-width="1" opacity="0.4"></line>
+          <line x1="160" y1="50" x2="234" y2="50" stroke="#a855f7" stroke-width="1" opacity="0.4"></line>
+        </svg>
+      </div>
+
+      <div class="cyber-panel p-3 flex-1 overflow-hidden">
+        <div class="neon-text text-xs font-bold mb-2">BTC/USD FUT (Dec-26)</div>
+        <canvas id="mainChart" width="400" height="200"></canvas>
+      </div>
+
+      <div class="grid grid-cols-2 gap-1 flex-1">
+        <div class="cyber-panel p-3 flex flex-col">
+          <div class="neon-text text-xs font-bold mb-2 uppercase">Trade History</div>
+          <div class="flex-1 flex items-center justify-center">
+            <div class="text-center">
+              <div class="neon-text text-2xl font-bold">68.5%</div>
+              <div class="text-xs text-slate-400 mt-1">Win Rate</div>
+            </div>
+          </div>
+        </div>
+        <div class="cyber-panel p-3 flex flex-col">
+          <div class="neon-text text-xs font-bold mb-2 uppercase">News Alerts</div>
+          <div class="text-[9px] space-y-1 overflow-y-auto flex-1">
+            <div class="border-l-2 border-yellow-500 pl-2">Market momentum ↑</div>
+            <div class="border-l-2 border-cyan-500 pl-2">Volatility spike</div>
+            <div class="border-l-2 border-green-500 pl-2">Bullish sentiment</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER-RIGHT: Volatility Charts (6 cols) -->
+    <div class="col-span-6 flex flex-col gap-1">
+      <div class="cyber-panel p-3 flex-1 overflow-hidden">
+        <div class="neon-text text-xs font-bold mb-2">Autosignaled Volatility</div>
+        <canvas id="chart1" width="200" height="150"></canvas>
+      </div>
+      <div class="cyber-panel p-3 flex-1 overflow-hidden">
+        <div class="neon-text text-xs font-bold mb-2">Antiswamped Volatility</div>
+        <canvas id="chart2" width="200" height="150"></canvas>
+      </div>
+    </div>
+
+    <!-- RIGHT: Order Book & Positions (6 cols) -->
+    <div class="col-span-6 flex flex-col gap-1">
+      <div class="cyber-panel p-3 flex-1 overflow-hidden">
+        <div class="neon-text text-xs font-bold mb-2 uppercase">Futures Order Book</div>
+        <div class="text-[9px] space-y-1 font-mono overflow-y-auto flex-1">
+          <div class="text-red-500 flex justify-between"><span>68,500</span><span>2.5</span><span>170K</span></div>
+          <div class="text-red-500 flex justify-between"><span>68,450</span><span>5.2</span><span>356K</span></div>
+          <div class="bg-blue-900/50 px-2 py-1 text-center neon-text font-bold rounded my-1">68,432.50</div>
+          <div class="text-green-500 flex justify-between"><span>68,400</span><span>4.8</span><span>328K</span></div>
+          <div class="text-green-500 flex justify-between"><span>68,350</span><span>3.1</span><span>211K</span></div>
+        </div>
+      </div>
+
+      <div class="cyber-panel p-3 flex-1 overflow-hidden">
+        <div class="neon-text text-xs font-bold mb-2 uppercase">Algorithmic Health</div>
+        <div class="space-y-2 text-xs flex-1">
+          <div>
+            <div class="flex justify-between mb-1"><span>Consensus</span><span class="neon-text-green">85.2%</span></div>
+            <div class="h-1 cyber-panel"><div class="h-full bg-cyan-500" style="width: 85%"></div></div>
+          </div>
+          <div>
+            <div class="flex justify-between mb-1"><span>Win Rate</span><span class="neon-text-green">68.5%</span></div>
+            <div class="h-1 cyber-panel"><div class="h-full bg-green-500" style="width: 68%"></div></div>
+          </div>
+          <div>
+            <div class="flex justify-between mb-1"><span>Risk/Reward</span><span class="neon-text-green">2.1:1</span></div>
+            <div class="h-1 cyber-panel"><div class="h-full bg-cyan-500" style="width: 64%"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cyber-panel p-3 flex-1 overflow-hidden flex flex-col">
+        <div class="neon-text text-xs font-bold mb-2 uppercase">Open Positions</div>
+        <div id="positionsContainer" class="text-[9px] space-y-2 overflow-y-auto flex-1">
+          <div class="bg-blue-900/20 p-2 rounded border-l-2 border-cyan-500">
+            <div class="flex justify-between font-bold neon-text"><span>Long BTC/USDT @ $81K</span><span class="neon-text-green">+ML</span></div>
+            <div class="flex justify-between mt-1 text-slate-400"><span>Leverage: 20x</span><span>Qty: 0.75</span></div>
+            <div class="flex justify-between mt-1"><span>Entry: $81,200</span><span class="neon-text-green">+$1,219</span></div>
+            <div class="mt-2 pt-2 border-t border-cyan-900/30 text-[8px] space-y-1">
+              <div class="flex justify-between"><span>Unrealised P&L:</span><span class="neon-text-green">+1.50%</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:8000';
+
+    function drawChart(canvasId) {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.fillStyle = 'rgba(15, 23, 41, 0.3)';
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = 'rgba(0, 217, 255, 0.1)';
+      for (let i = 0; i < 5; i++) {
+        const y = (h / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = '#00d9ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let x = 0; x < w; x += 5) {
+        const y = h / 2 + Math.sin(x * 0.05) * h / 4 + (Math.random() - 0.5) * h / 8;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(0, 217, 255, 0.15)';
+      for (let x = 0; x < w; x += 15) {
+        const vol = h * 0.2 + Math.random() * (h * 0.15);
+        ctx.fillRect(x, h - vol, 10, vol);
+      }
+    }
+
+    function updateData() {
+      document.getElementById('headerTime').textContent = new Date().toLocaleTimeString();
+      drawChart('mainChart');
+      drawChart('chart1');
+      drawChart('chart2');
+      drawChart('indexChart');
+    }
+
+    window.addEventListener('load', updateData);
+    setInterval(updateData, 1000);
+  </script>
+</body>
+</html>

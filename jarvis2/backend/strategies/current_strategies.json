@@ -1,0 +1,34 @@
+{
+  "XAUUSD": {
+    "name": "RSI + MACD Divergence",
+    "ema_short": 12,
+    "ema_long": 26,
+    "win_rate": 0.0,
+    "trades": 0,
+    "status": "ACTIVE"
+  },
+  "STOCKS": {
+    "name": "Momentum",
+    "momentum_threshold": 1.5,
+    "volume_min": 500000,
+    "win_rate": 0.0,
+    "trades": 0,
+    "status": "ACTIVE"
+  },
+  "SENSEX": {
+    "name": "Support/Resistance + RSI",
+    "buy_level": 0.7,
+    "sell_level": 0.3,
+    "win_rate": 0.0,
+    "trades": 0,
+    "status": "ACTIVE"
+  },
+  "OPTIONS": {
+    "name": "Candle Body",
+    "body_ratio_threshold": 0.7,
+    "volume_min": 1000000,
+    "win_rate": 0.0,
+    "trades": 0,
+    "status": "ACTIVE"
+  }
+}

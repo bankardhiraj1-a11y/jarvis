@@ -1,0 +1,39 @@
+﻿
+======================================================================
+SENSEX SCALPING AGENT - BACKTEST REPORT
+======================================================================
+
+Agent: SENSEX_SCALPING
+Timeframe: 3m
+Quantity per trade: 50
+Take Profit: 15 points
+Min R:R Ratio: 1.0:1
+Strategy: 3-min trend following with candle breakout
+
+Generating 500 3-minute candles (~2500 minutes = 42 hours)...
+✓ Generated 500 candles
+
+Running backtest...
+
+----------------------------------------------------------------------
+BACKTEST RESULTS
+----------------------------------------------------------------------
+Total Trades: 280
+Winning Trades: 279
+Losing Trades: 1
+Win Rate: 99.64%
+Avg Win: ₹750.00
+Avg Loss: ₹0.00
+Profit Factor: 1.00
+Total P&L: ₹209250.00
+----------------------------------------------------------------------
+
+DECISION LOGIC:
+  Win Rate Target: >= 75%
+  Current Win Rate: 99.64% ✅ PASS
+  Profit Factor Target: >= 1.5
+  Current Profit Factor: 1.00 ❌ FAIL
+
+❌ STRATEGY REJECTED
+   - Profit factor 1.00 < 1.5 required
+   - Will NOT be added to live trading

@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-22",
+  "agent": "XAUUSD",
+  "total_trades": 4,
+  "wins": 3,
+  "losses": 1,
+  "win_pct": 75.0,
+  "total_profit": 470,
+  "total_loss": 50,
+  "net_profit": 420,
+  "profit_factor": 9.4,
+  "avg_win": 156.66666666666666,
+  "avg_loss": 50,
+  "recommendation": "[EXCELLENT] Keep strategy unchanged"
+}
