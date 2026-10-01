@@ -1,5 +1,24 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
 
+.gold-strategy-status {
+  margin: 16px 0;
+  padding: 16px 20px;
+  border: 1px solid #2b3545;
+  border-radius: 8px;
+  background: #131a26;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.gold-strategy-heading, .gold-strategy-frames {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.gold-strategy-heading span { color: #e7bd74; font-size: 11px; }
+.gold-strategy-frames { justify-content: flex-start; margin-top: 10px; }
+.gold-strategy-status p { margin: 6px 0 0; color: #aeb9c9; overflow-wrap: anywhere; }
+
 :root {
   font-family: 'Manrope', sans-serif;
   color: #e5eaf2;

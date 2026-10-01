@@ -307,18 +307,28 @@ export default function ManualOrderForm({ apiRoot, onSuccess, onClose }) {
               <span>Take profit 2 · {isGold ? 'USD' : 'INR'} · optional{isOption ? ' · 2+ lots' : ''}</span>
               <input type="number" min="0.01" step="any" value={takeProfitTwo} onChange={(event) => setTakeProfitTwo(event.target.value)} />
             </label>
-            {!isGold && <label>
-              <span>Max hold · minutes (1–25)</span>
-              <input type="number" min="1" max={holdMaximum} step="1" value={maxHoldMinutes} onChange={(event) => setMaxHoldMinutes(event.target.value)} required />
-            </label>}
+            {!isGold && (
+              <label>
+                <span>Max hold · minutes (1–25)</span>
+                <input type="number" min="1" max={holdMaximum} step="1" value={maxHoldMinutes} onChange={(event) => setMaxHoldMinutes(event.target.value)} required />
+              </label>
+            )}
           </div>
+
+          {isGold && (
+            <p className="manual-order-note">
+              Manual Gold is managed by stop loss and targets, with no elapsed-time exit.
+              Mandatory exit is the earlier of the 23:00 UTC cutoff or one minute before
+              New York 17:00 rollover, using a fresh provider quote.
+              The automatic strategy’s 25-minute cap does not apply to manual Gold.
+            </p>
+          )}
 
           {!availableSymbols.length && (
             <p className="manual-order-note is-error" role="alert">
               The server configuration does not list an available {isOption ? 'supported options underlying' : 'instrument'} for this market.
             </p>
           )}
-          {isGold && <p className="manual-order-note">Manual Gold: stop/targets manage exits, without a 25-minute timer. Rollover/session safety still applies.</p>}
           {isOption && (
             <p className="manual-order-note">Options open with BUY CE/PE only. Naked SELL orders are unavailable.</p>
           )}

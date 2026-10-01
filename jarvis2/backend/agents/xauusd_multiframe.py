@@ -183,7 +183,7 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
         self._risk_policy_parameters = {
             "bar_interval_minutes": 1,
             "rsi_period": 14,
-            "rsi_reentry_threshold": 25,
+            "rsi_reentry_threshold": 30,
             "bollinger_period": 20,
             "bollinger_stddev": 2.0,
             "regime_fast_ema": 20,
@@ -200,6 +200,15 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
         self._snapshot: dict[str, Any] | None = None
         self._snapshot_error: str | None = None
         self._last_processed_m3_at: datetime | None = None
+        self._ema_history: dict[str, dict[str, Any]] = {
+            frame: {
+                "last_observed_at": None,
+                "ema20": None,
+                "ema50": None,
+                "tail": [],
+            }
+            for frame in _FRAME_MINUTES
+        }
         self._startup_historical_call_suppression = False
         self._decision_callback: Callable[[dict[str, Any]], Any] | None = None
         self._latest_decision: dict[str, Any] = {}
@@ -375,6 +384,12 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
         if not isinstance(market_data, dict) or market_data.get("source") != "OANDA":
             self._latest_diagnostics["reasons"] = ["fresh_OANDA_quote_required"]
             return None
+        if market_data.get("instrument") != "XAU_USD":
+            self._latest_diagnostics["reasons"] = ["quote_instrument_must_be_XAU_USD"]
+            return None
+        if market_data.get("tradeable") is not True:
+            self._latest_diagnostics["reasons"] = ["OANDA_instrument_not_tradeable"]
+            return None
         quote_at = _utc_timestamp(
             market_data.get("provider_timestamp", market_data.get("timestamp"))
         )
@@ -397,6 +412,9 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
             self._latest_diagnostics["reasons"] = ["invalid_OANDA_bid_ask"]
             return None
         fetched_at = self._snapshot["fetched_at"]
+        if (now - fetched_at).total_seconds() > 210:
+            self._latest_diagnostics["reasons"] = ["candle_snapshot_stale"]
+            return None
         if fetched_at > quote_at + timedelta(seconds=2):
             self._latest_diagnostics["reasons"] = [
                 "snapshot_observation_later_than_quote"
@@ -407,13 +425,20 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
 
     @staticmethod
     def _directions(
-        frames: dict[str, list[dict[str, Any]]]
+        frames: dict[str, list[dict[str, Any]]],
+        metrics_override: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
-        metrics = {frame: _bar_metrics(frames[frame]) for frame in _FRAME_MINUTES}
+        metrics = metrics_override or {
+            frame: _bar_metrics(frames.get(frame, [])) for frame in _FRAME_MINUTES
+        }
         h4, m15, m3 = (metrics[key] for key in ("H4", "M15", "M3"))
         reasons: list[str] = []
         h4_direction = None
-        if h4["ema20"] is not None and h4["ema50"] is not None:
+        if (
+            h4["ema20"] is not None
+            and h4["ema50"] is not None
+            and h4["ema20_slope_3"] is not None
+        ):
             slope = h4["ema20_slope_3"]
             if h4["ema20"] > h4["ema50"] and h4["close"] > h4["ema20"] and slope > 0:
                 h4_direction = Signal.BUY.value
@@ -485,6 +510,100 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
             reasons.append("all_three_timeframes_confirmed_" + candidate)
         return metrics["H4"], metrics["M15"], metrics["M3"], reasons
 
+    def _advance_ema_history(
+        self, frames: dict[str, list[dict[str, Any]]]
+    ) -> tuple[dict[str, dict[str, Any]], bool]:
+        """Advance persistent EMA seeds only over newly observed causal closes."""
+        output: dict[str, dict[str, Any]] = {}
+        coherent = True
+        for frame, bars in frames.items():
+            state = self._ema_history[frame]
+            last_observed = state["last_observed_at"]
+            if bars and last_observed is not None and bars[-1]["observed_at"] < last_observed:
+                coherent = False
+
+            fast, slow = state["ema20"], state["ema50"]
+            tail = list(state["tail"])
+            alpha20, alpha50 = 2.0 / 21.0, 2.0 / 51.0
+            for bar in bars:
+                observed_at = bar["observed_at"]
+                if last_observed is not None and observed_at <= last_observed:
+                    continue
+                close = bar["close"]
+                fast = close if fast is None else alpha20 * close + (1.0 - alpha20) * fast
+                slow = close if slow is None else alpha50 * close + (1.0 - alpha50) * slow
+                tail.append((observed_at, fast, slow))
+                tail = tail[-4:]
+                last_observed = observed_at
+
+            if bars and last_observed != bars[-1]["observed_at"]:
+                coherent = False
+            if bars:
+                state.update(
+                    last_observed_at=last_observed,
+                    ema20=fast,
+                    ema50=slow,
+                    tail=tail,
+                )
+
+            metrics = _bar_metrics(bars)
+            if bars and state["last_observed_at"] == bars[-1]["observed_at"]:
+                tail_by_time = {stamp: (ema20, ema50) for stamp, ema20, ema50 in state["tail"]}
+                fast_series = [
+                    tail_by_time.get(bar["observed_at"], (None, None))[0]
+                    for bar in bars
+                ]
+                metrics.update(
+                    ema20_series=fast_series,
+                    ema50_series=[
+                        tail_by_time.get(bar["observed_at"], (None, None))[1]
+                        for bar in bars
+                    ],
+                    ema20=state["ema20"],
+                    ema50=state["ema50"],
+                    ema20_slope_3=(
+                        state["tail"][-1][1] - state["tail"][-4][1]
+                        if len(state["tail"]) >= 4
+                        else None
+                    ),
+                )
+            elif bars:
+                metrics.update(
+                    ema20=None,
+                    ema50=None,
+                    ema20_slope_3=None,
+                    ema20_series=[None] * len(bars),
+                    ema50_series=[None] * len(bars),
+                )
+            output[frame] = metrics
+        return output, coherent
+
+    @staticmethod
+    def _weekend_gap_is_valid(observed_at: datetime, decision_at: datetime) -> bool:
+        """Allow a genuine weekend closure without treating weekday gaps as fresh."""
+        age = (decision_at - observed_at).total_seconds()
+        return (
+            observed_at.weekday() == 4
+            and decision_at.weekday() in (6, 0)
+            and 0 <= age <= 60 * 60 * 60
+        )
+
+    @classmethod
+    def _stale_frame_reasons(
+        cls, frames: dict[str, list[dict[str, Any]]], decision_at: datetime
+    ) -> list[str]:
+        stale: list[str] = []
+        for frame in ("M15", "H4"):
+            bars = frames[frame]
+            if not bars:
+                continue
+            observed_at = bars[-1]["observed_at"]
+            max_age = _FRAME_MINUTES[frame] * 2 * 60
+            age = (decision_at - observed_at).total_seconds()
+            if age > max_age and not cls._weekend_gap_is_valid(observed_at, decision_at):
+                stale.append(f"latest_{frame}_close_stale")
+        return stale
+
     def _sync_utc_day(self, timestamp: datetime) -> None:
         day = timestamp.astimezone(_UTC).date()
         if self.highwin_state.get("last_utc_day") != day:
@@ -523,6 +642,11 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
         m3 = frames["M3"][-1]["observed_at"] if frames["M3"] else None
         if m3 and (now - m3).total_seconds() > 210:
             self._latest_diagnostics["reasons"] = ["latest_M3_close_stale"]
+            self._latest_diagnostics["status"] = "WAIT"
+            return
+        stale_frames = self._stale_frame_reasons(frames, now)
+        if stale_frames:
+            self._latest_diagnostics["reasons"] = stale_frames
             self._latest_diagnostics["status"] = "WAIT"
             return
         self._latest_diagnostics["status"] = "READY"
@@ -575,7 +699,12 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
         self._counts["checked"] += 1
         self._sync_utc_day(decision_at)
         selected = self._causal_frames(decision_at, quote_at)
-        h4, m15, m3, reasons = self._directions(selected)
+        indicator_metrics, history_coherent = self._advance_ema_history(selected)
+        h4, m15, m3, reasons = self._directions(selected, indicator_metrics)
+        stale_frame_reasons = self._stale_frame_reasons(selected, decision_at)
+        reasons.extend(stale_frame_reasons)
+        if not history_coherent:
+            reasons.append("indicator_history_out_of_order")
         required = MULTIFRAME_PARAMETERS["minimum_completed_candles"]
         warmup_reasons = [
             f"{frame}_warmup_{len(selected[frame])}_{required[frame]}"
@@ -583,7 +712,7 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
             if len(selected[frame]) < required[frame]
         ]
         candidate = None
-        if not warmup_reasons:
+        if not warmup_reasons and not stale_frame_reasons and history_coherent:
             if h4["direction"] == m15["direction"] == m3["direction"]:
                 if h4["direction"] in (Signal.BUY.value, Signal.SELL.value):
                     if m15["pullback_touch"]:
@@ -610,6 +739,9 @@ class XAUUSDMultiframeResearchAgent(XAUUSDResearchAgent):
             blockers.append("startup_historical_M3_signal_suppressed")
         if warmup_reasons:
             blockers.extend(warmup_reasons)
+        blockers.extend(reason for reason in stale_frame_reasons if reason not in blockers)
+        if not history_coherent:
+            blockers.append("indicator_history_out_of_order")
         if candidate is None:
             blockers.extend(reason for reason in reasons if reason not in blockers)
             if not reasons:

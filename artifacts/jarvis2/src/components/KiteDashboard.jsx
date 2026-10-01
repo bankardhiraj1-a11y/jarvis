@@ -455,6 +455,44 @@ export default function KiteDashboard() {
           </div>
         </section>
 
+        <section className="gold-strategy-status" aria-label="Automatic Gold paper strategy" data-testid="gold-strategy-status">
+          <div className="gold-strategy-heading">
+            <strong>Gold automatic · H4 / M15 / M3</strong>
+            <span>EXPERIMENTAL · PAPER ONLY · NOT VALIDATED</span>
+          </div>
+          {performance.XAUUSD?.signal_status ? (
+            <>
+              <div className="gold-strategy-frames">
+                {['h4', 'm15', 'm3'].map((frame) => (
+                  <span key={frame}>
+                    {frame.toUpperCase()}: {performance.XAUUSD.signal_status.diagnostics?.[`${frame}_direction`] || 'UNKNOWN'}
+                  </span>
+                ))}
+                <span>Checked: {performance.XAUUSD.signal_status.diagnostics?.checked_count ?? 0}</span>
+                <span>BUY: {performance.XAUUSD.signal_status.diagnostics?.buy_count ?? 0}</span>
+                <span>SELL: {performance.XAUUSD.signal_status.diagnostics?.sell_count ?? 0}</span>
+                <span>Actionable: {performance.XAUUSD.signal_status.diagnostics?.actionable_count ?? 0}</span>
+              </div>
+              <p>
+                Latest M3 decision: {performance.XAUUSD.signal_status.diagnostics?.latest_decision_timestamp
+                  ? new Date(performance.XAUUSD.signal_status.diagnostics.latest_decision_timestamp).toLocaleString()
+                  : 'None yet'} · History: {performance.XAUUSD.signal_status.history?.status || 'WAIT'}
+              </p>
+              <p>
+                Latest setup: {performance.XAUUSD.signal_status.diagnostics?.candidate_signal || 'HOLD'} ·
+                Decision: {performance.XAUUSD.signal_status.diagnostics?.actionable_signal || 'HOLD'}
+              </p>
+              <p>{performance.XAUUSD.status || 'WAIT'}: {performance.XAUUSD.reason || 'Waiting for provider evidence'}</p>
+              {!!performance.XAUUSD.signal_status.diagnostics?.blockers?.length && (
+                <p>Decision blocked: {performance.XAUUSD.signal_status.diagnostics.blockers.join(' · ')}</p>
+              )}
+              <p>{(performance.XAUUSD.signal_status.diagnostics?.reasons || []).join(' · ') || 'Awaiting next completed candle'}</p>
+            </>
+          ) : <p>Waiting for strategy status. No prices, calls or fills are inferred.</p>}
+          <p>$150 planned price risk before costs/gaps · 100 oz · 25-minute maximum hold · max 3 accepted entries per UTC day · London 08:00–17:00 local entry window. Manual orders have priority.</p>
+          <p>Calls are setup checks, not fills. Gold performance totals below include prior strategies and manual trades, not isolated H4/M15/M3 results.</p>
+        </section>
+
         <section className="trade-browser">
           <nav className="tabs" aria-label="Trade views" data-testid="navigation-trade-tabs">
             {tabs.map(({ id, label, Icon }) => (

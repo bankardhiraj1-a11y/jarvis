@@ -35,7 +35,7 @@ from agents.sensex import SensexAgent
 from agents.options import OptionsAgent
 from agents.xauusd import XAUUSDAgent
 from agents.xauusd import entry_window_intervals_utc, within_entry_window
-from agents.xauusd_highwin import XAUUSDHighWinResearchAgent
+from agents.xauusd_multiframe import XAUUSDMultiframeResearchAgent
 from agents.base import Signal
 from agents.sensex_options_scalping import SensexOptionsScalpingAgent
 from learning.learning_engine import LearningEngine
@@ -48,6 +48,7 @@ from backtest.backtest_engine import BacktestEngine
 from backtest.live_capture import LiveObservationRecorder
 from data.dhan_live_client import DhanLiveClient
 from data.onda_client import OndaClient
+from data.xauusd_multiframe_feed import XauusdMultiFrameFeed
 from data.currency_conversion import (
     EcbUsdInrRateProvider, consolidate_pnl_currencies,
     gold_quantity_from_lots, gold_lot_display,
@@ -114,34 +115,7 @@ agents_map = {
     "STOCKS": StocksAgent(),
     "SENSEX": SensexAgent(),
     "OPTIONS": OptionsAgent(),
-    "XAUUSD": XAUUSDHighWinResearchAgent({
-        "bar_interval_minutes": 1,
-        "rsi_period": 7,
-        "rsi_reentry_threshold": 20,
-        "bollinger_period": 20,
-        "bollinger_stddev": 2.0,
-        "regime_fast_ema": 20,
-        "regime_slow_ema": 50,
-        "max_range_ema_separation_usd": 2.0,
-        "stop_loss_usd_per_oz": 1.5,
-        "take_profit_usd_per_oz": 3.75,
-        "max_hold_minutes": 25,
-        "allow_overnight": False,
-        "entry_window": {
-            "name": "Europe_London_08_17",
-            "mode": "any",
-            "day_timezone": "Europe/London",
-            "clauses": [
-                {
-                    "timezone": "Europe/London",
-                    "start": "08:00",
-                    "end": "17:00",
-                }
-            ],
-        },
-        "max_trades_per_utc_day": 3,
-        "position_quantity_units": 100,
-    }),
+    "XAUUSD": XAUUSDMultiframeResearchAgent(),
     "SENSEX_OPTIONS_SCALPING": SensexOptionsScalpingAgent(),
 }
 
@@ -152,6 +126,8 @@ performance_monitor = PerformanceMonitor(target_win_rate=0.90)
 backtest_engine = BacktestEngine()
 dhan_client = DhanLiveClient()
 onda_client = OndaClient()
+xau_multiframe_feed = XauusdMultiFrameFeed(onda_client)
+_XAU_CANDLE_REFRESH_AT = None
 usd_inr_provider = EcbUsdInrRateProvider()
 oanda_cost_metadata_provider = (
     OandaCostMetadataProvider(onda_client) if OandaCostMetadataProvider else None
@@ -330,13 +306,12 @@ _AGENT_RUNTIME_STATUS = {
     "XAUUSD": {
         "status": "WAITING_FOR_DATA",
         "reason": (
-            "London 08:00-17:00 Europe/London is an unvalidated forward-paper "
-            "hypothesis only; the session study rejected all candidates and "
-            "reported negative fit and validation quote-side P&L"
+            "H4 bias / M15 pullback / M3 trigger is an unvalidated paper-only "
+            "experiment. Waiting for completed OANDA candles and a fresh quote."
         ),
         "learner_status": "EXPERIMENTAL_PAPER_LEARNING",
         "provenance": "OANDA live bid/ask quotes and completed bars",
-        "research_status": "NO_VALIDATED_WINNER_FORWARD_PAPER_HYPOTHESIS_ONLY",
+        "research_status": "MULTIFRAME_UNVALIDATED_FORWARD_PAPER_ONLY",
         "live_orders_enabled": False,
         "forward_paper_hypothesis_only": True,
         "profitability_claim": False,
@@ -527,69 +502,25 @@ def _xau_entry_window_status(now=None):
 def _xau_strategy_parameters():
     return dict(agents_map["XAUUSD"].highwin_parameters)
 
-
-_XAU_SESSION_STUDY_STATUS = {
-    "status": "NO_VALIDATED_WINNER",
-    "candidate_count": 12,
-    "fit_validation_eligible_candidates": 0,
-    "holdout_evaluated_candidates": 0,
-    "holdout_inspected_for_selection": False,
-    "all_candidates_rejected": True,
-    "forward_paper_hypothesis_only": True,
-    "profitability_claim": False,
-    "selected_session_hypothesis": "Europe_London_08_17",
-    "selection_note": (
-        "London was chosen only as an explicitly unvalidated forward-paper hypothesis: "
-        "its fixed RSI/Bollinger validation loss was the smallest among adequately sampled "
-        "windows, but both fit and validation P&L were negative. It is not a profitable "
-        "prediction or validated winner."
-    ),
-    "strategy_key": "RSI_BB_EXISTING_BEST_COVERAGE_FIXED",
-    "fit": {
-        "closed_trades": 86,
-        "wins": 19,
-        "losses": 67,
-        "win_rate_pct": 22.09,
-        "quote_side_pnl_before_unverified_additional_costs_usd": -3217.0,
-    },
-    "validation": {
-        "closed_trades": 30,
-        "wins": 8,
-        "losses": 22,
-        "win_rate_pct": 26.67,
-        "quote_side_pnl_before_unverified_additional_costs_usd": -300.0,
-    },
-    "comparison_context": {
-        "us_validation_quote_side_pnl_usd": -1275.0,
-        "us_validation_closed_trades": 33,
-        "original_utc_16_23_validation_quote_side_pnl_usd": -1875.0,
-        "original_utc_16_23_validation_closed_trades": 30,
-        "europe_us_overlap_validation_quote_side_pnl_usd": 375.0,
-        "europe_us_overlap_validation_closed_trades": 8,
-        "europe_us_overlap_rejected_for_inadequate_sample": True,
-    },
-    "pnl_basis": (
-        "Historical executable-side bid/ask P&L includes observed spread, but excludes "
-        "unverified OANDA commission and financing; it is not final net P&L."
-    ),
-    "holdout_rule": (
-        "Final holdout was not evaluated because zero candidates qualified on fit and validation."
-    ),
-    "live_orders_enabled": False,
-}
-
-
-_AGENT_RUNTIME_STATUS["XAUUSD"].update({
-    "research_status": "NO_VALIDATED_WINNER_FORWARD_PAPER_HYPOTHESIS_ONLY",
-    "session_study": _XAU_SESSION_STUDY_STATUS,
-    "active_entry_window": _xau_entry_window_status(),
-    "forward_paper_hypothesis_only": True,
-    "profitability_claim": False,
-    "quote_collection_independent_of_entry_session": True,
-    "strategy_parameters": _xau_strategy_parameters(),
-})
-
-
+async def _refresh_xau_candles():
+    """Refresh read-only history before pricing, independent of entry eligibility."""
+    global _XAU_CANDLE_REFRESH_AT
+    now = datetime.now(timezone.utc)
+    if _XAU_CANDLE_REFRESH_AT is not None and (
+        now - _XAU_CANDLE_REFRESH_AT
+    ).total_seconds() < 60:
+        return
+    _XAU_CANDLE_REFRESH_AT = now
+    try:
+        snapshot = await asyncio.to_thread(xau_multiframe_feed.refresh, now=now)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # Invalidate, never retain usable history after a provider refresh failure.
+        agents_map["XAUUSD"].update_candles({})
+        logger.warning("OANDA completed-candle refresh unavailable; Gold entries blocked")
+        return
+    agents_map["XAUUSD"].update_candles(snapshot)
 def _fresh_indian_quote(symbol):
     security_id = SYMBOL_TO_ID.get(symbol)
     if not security_id:
@@ -720,6 +651,10 @@ def _monitor_open_trade(db, trade, agent_name):
                 gold_deadline
                 and parsed_exit_time.astimezone(timezone.utc) >= gold_deadline
             )
+            if manual_gold_order:
+                hard_exit_due = hard_exit_due or manual_gold_holding_decision(
+                    entry_event_time, parsed_exit_time
+                )["due"]
         except (TypeError, ValueError):
             pass
     if trade.trade_type.value == "BUY":
@@ -838,6 +773,9 @@ def _agent_history_status(agent_name, symbol):
     status_fn = getattr(agent, "get_history_status", None)
     if callable(status_fn):
         try:
+            if agent_name == "XAUUSD":
+                history = status_fn()
+                return {**history, "reason": "; ".join(history.get("reasons", []))}
             return status_fn(symbol)
         except Exception:
             return {"status": "WARMING_UP", "reason": "Strategy history status unavailable"}
@@ -1417,6 +1355,7 @@ async def lifespan(app: FastAPI):
                 dhan_refresh_ok = await asyncio.to_thread(
                     dhan_client.refresh_quotes, _instruments_to_subscribe
                 )
+                await _refresh_xau_candles()
                 xau_quote = await asyncio.to_thread(onda_client.get_live_data, "XAUUSD", "XAUUSD")
 
                 indian_quotes = {}
@@ -1444,6 +1383,15 @@ async def lifespan(app: FastAPI):
                 # arrive, even outside entry hours or while a position is open.
                 if xau_fresh:
                     try:
+                        entry_at = _provider_time(
+                            xau_quote.get("provider_timestamp") or xau_quote.get("timestamp")
+                        )
+                        if entry_at is not None:
+                            gold_agent = agents_map["XAUUSD"]
+                            gold_agent.highwin_state["last_utc_day"] = entry_at.date()
+                            gold_agent.highwin_state["daily_entry_count"] = len(
+                                _gold_entries_for_utc_day(db, entry_at.date())
+                            )
                         xau_shadow_signal = agents_map["XAUUSD"].analyze(xau_quote).value
                         _increment_daily_call("XAUUSD")
                     except Exception:
@@ -1452,10 +1400,8 @@ async def lifespan(app: FastAPI):
                 _AGENT_RUNTIME_STATUS["XAUUSD"] = {
                     "status": "EXPERIMENTAL_PAPER_LEARNING" if xau_fresh else "WAITING_FOR_DATA",
                     "reason": (
-                        "London RSI/Bollinger is an unvalidated forward-paper hypothesis only: "
-                        "fit was 86 trades and -$3,217 quote-side P&L; validation was 30 trades "
-                        "and -$300. All 12 candidates were rejected; no validated winner or "
-                        "profitability claim."
+                        "H4 bias / M15 pullback / M3 trigger: experimental paper-only, "
+                        "no validated performance or profitability claim."
                         if xau_fresh else
                         "OANDA pricing is unavailable or stale; no prices or fills invented. "
                         "Session-window-independent quote collection and indicator warmup remain active."
@@ -1467,7 +1413,8 @@ async def lifespan(app: FastAPI):
                     "currency": "USD",
                     "learner_status": "EXPERIMENTAL_PAPER_LEARNING",
                     "provenance": "OANDA provider-timestamped XAU_USD bid/ask and completed strategy bars",
-                    "research_status": "NO_VALIDATED_WINNER_FORWARD_PAPER_HYPOTHESIS_ONLY",
+                    "research_status": "MULTIFRAME_UNVALIDATED_FORWARD_PAPER_ONLY",
+                    "signal_status": _xau_signal_status(),
                     "session_study": _XAU_SESSION_STUDY_STATUS,
                     "active_entry_window": xau_entry_window,
                     "strategy_parameters": _xau_strategy_parameters(),
@@ -1964,7 +1911,7 @@ async def lifespan(app: FastAPI):
                                 else "BACKTEST_REQUIRED"
                             ),
                             "research_status": (
-                                "NO_VALIDATED_WINNER_FORWARD_PAPER_HYPOTHESIS_ONLY"
+                                "MULTIFRAME_UNVALIDATED_FORWARD_PAPER_ONLY"
                                 if agent_name == "XAUUSD"
                                 else "RESEARCH_NOT_VALIDATED"
                             ),
@@ -2568,6 +2515,7 @@ async def get_agents_performance(db: Session = Depends(get_db)):
                 "quote_collection_independent_of_entry_session", False
             ),
             "strategy_parameters": runtime.get("strategy_parameters"),
+            **({"signal_status": _xau_signal_status()} if agent_name == "XAUUSD" else {}),
             "analyzing": runtime.get("status") in {"RUNNING", "PAPER_POSITION_OPEN"},
             "target_win_rate": 90,
             "target_is_aspirational": True,
@@ -2921,6 +2869,7 @@ async def get_performance_summary(db: Session = Depends(get_db)):
                     "quote_collection_independent_of_entry_session", True
                 ),
                 "strategy_parameters": runtime.get("strategy_parameters"),
+                "signal_status": _xau_signal_status(),
             })
 
     return {
@@ -3113,6 +3062,7 @@ async def get_gold_market():
         ),
         "entry_window": _xau_entry_window_status(),
         "research_status": _AGENT_RUNTIME_STATUS["XAUUSD"]["research_status"],
+        "signal_status": _xau_signal_status(),
         "forward_paper_hypothesis_only": True,
         "live_orders_enabled": False,
     }
@@ -3213,3 +3163,20 @@ async def websocket_endpoint(websocket: WebSocket):
             })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+def _xau_signal_status():
+    """Network-free diagnostic view; never advances or creates a strategy signal."""
+    agent = agents_map["XAUUSD"]
+    diagnostics = agent.get_diagnostics()
+    return {
+        "strategy_id": "XAUUSD_H4_M15_M3_EMA_PULLBACK",
+        "timeframes": ["H4", "M15", "M3"],
+        "history": agent.get_history_status(),
+        "diagnostics": diagnostics,
+        "planned_price_risk_usd": 150.0,
+        "planned_target_usd": 375.0,
+        "risk_note": "Planned stop risk before costs and gaps, not a guaranteed loss ceiling.",
+        "performance_scope": "Existing Gold metrics include prior strategies and manual trades, not isolated multiframe performance.",
+        "experimental": True,
+        "validated": False,
+        "live_orders_enabled": False,
+    }

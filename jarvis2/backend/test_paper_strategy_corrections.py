@@ -49,7 +49,6 @@ def correction_db():
             expires_at=ENTRY.replace(tzinfo=None) + timedelta(hours=2),
             filled_at=ENTRY.replace(tzinfo=None),
             fill_price=4180.4,
-            state_version=7,
         )
         db.add(parent)
         db.flush()
@@ -105,13 +104,13 @@ def replay(db, parent, observations, current, request="strategy-fix"):
 
 def test_idempotent_correction_keeps_entry_and_old_close_audited(correction_db):
     db, parent, legs = correction_db
+    initial_state_version = parent.state_version
     entry_before = [
         (leg.entry_price, leg.created_at, leg.entry_data_timestamp, leg.quantity,
          leg.stop_loss, leg.take_profit)
         for leg in legs
     ]
     old_close = (legs[0].exit_price, legs[0].closed_at, legs[0].exit_data_timestamp, legs[0].pnl)
-    original_version = parent.state_version
     observations = [quote(OLD_EXIT + timedelta(seconds=10), 4165.0)]
     current = quote(NOW, 4164.5)
     first = replay(db, parent, observations, current)
@@ -139,7 +138,7 @@ def test_idempotent_correction_keeps_entry_and_old_close_audited(correction_db):
     assert audit["original_entry_fields"]["entry_price"] == 4180.4
     assert "unobserved intratick movements unknown" in audit["replay_data_note"]
     assert parent.status == "FILLED"
-    assert parent.state_version == original_version
+    assert parent.state_version == initial_state_version
     assert db.query(PaperTradeCorrection).count() == 2
 
 

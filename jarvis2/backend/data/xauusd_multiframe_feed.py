@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
-
-from data.oanda_pricing import OandaCandleError
+from zoneinfo import ZoneInfo
 
 
 class XauusdFeedError(Exception):
@@ -16,6 +15,9 @@ _INSTRUMENT = "XAU_USD"
 _FRAME_CONFIG = {"M1": (1, 240), "M15": (15, 100), "H4": (240, 100)}
 _OHLC = ("open", "high", "low", "close")
 _LETTERS = {"open": "o", "high": "h", "low": "l", "close": "c"}
+_OANDA_ALIGNMENT_TIMEZONE = ZoneInfo("America/New_York")
+_OANDA_DAILY_ALIGNMENT_HOUR = 17
+_EXTRA_CANDLE_FOR_INCOMPLETE = 1
 
 
 def _utc_timestamp(value):
@@ -86,14 +88,12 @@ class XauusdMultiFrameFeed:
     def _fetch(self, granularity, count):
         try:
             return self.client.get_completed_candles(granularity, count)
-        except OandaCandleError as exc:
-            raise XauusdFeedError(str(exc)) from None
         except Exception:
-            # Do not surface arbitrary transport exceptions, response bodies, or secrets.
+            # Do not surface arbitrary transport exceptions, provider bodies, or secrets.
             raise XauusdFeedError("OANDA candle refresh failed") from None
 
     def _records(self, granularity, count, interval, environment, now):
-        candles = self._fetch(granularity, count)
+        candles = self._fetch(granularity, count + _EXTRA_CANDLE_FOR_INCOMPLETE)
         if not isinstance(candles, list):
             raise XauusdFeedError("OANDA candle response is invalid")
 
@@ -114,12 +114,18 @@ class XauusdMultiFrameFeed:
                 raise XauusdFeedError("OANDA candles are duplicate or non-chronological")
             previous = opened
 
-            # OANDA timestamps identify bar opens; malformed off-boundary bars are rejected.
+            # OANDA H4 candles use its default 17:00 America/New_York daily
+            # alignment, so UTC hour modulo four is wrong on both DST offsets.
+            local_opened = opened.astimezone(_OANDA_ALIGNMENT_TIMEZONE)
+            h4_off_boundary = (
+                interval == 240
+                and (local_opened.hour - _OANDA_DAILY_ALIGNMENT_HOUR) % 4 != 0
+            )
             if (
                 opened.second != 0
                 or opened.microsecond != 0
                 or (interval < 60 and opened.minute % interval != 0)
-                or (interval == 240 and (opened.minute != 0 or opened.hour % 4 != 0))
+                or (interval == 240 and (local_opened.minute != 0 or h4_off_boundary))
             ):
                 raise XauusdFeedError("OANDA candle open time does not match its granularity")
 
@@ -128,7 +134,10 @@ class XauusdMultiFrameFeed:
                 continue
             bid, ask = _validated_candle(candle, granularity, environment)
             records.append({"opened": opened, "observed": observed, "bid": bid, "ask": ask})
-        return records
+        # Keep the newest fixed-size, complete history for reproducible EMA
+        # seeding across refreshes. The extra provider row makes room for the
+        # current, incomplete candle without shortening the warmup window.
+        return records[-count:]
 
     @staticmethod
     def _canonical_bar(opened, observed, bid, ask, interval, environment):
@@ -186,6 +195,8 @@ class XauusdMultiFrameFeed:
     def _direct_bars(self, granularity, environment, now):
         interval, count = _FRAME_CONFIG[granularity]
         records = self._records(granularity, count, interval, environment, now)
+        if granularity == "H4" and len(records) < count:
+            raise XauusdFeedError("OANDA returned fewer than 100 complete H4 candles")
         return [
             self._canonical_bar(
                 record["opened"], record["observed"], record["bid"], record["ask"],

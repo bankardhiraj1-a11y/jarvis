@@ -309,7 +309,7 @@ def test_gold_entry_and_exit_respect_next_new_york_rollover():
     assert "rollover" in due["reason"].lower()
 
 
-def test_gold_runtime_parameters_match_the_fixed_london_study_candidate():
+def test_gold_runtime_multiframe_does_not_relabel_prior_london_study_evidence():
     study_path = Path(main.__file__).resolve().parents[1] / "evidence" / "xauusd_session_study.json"
     study = json.loads(study_path.read_text(encoding="utf-8"))
     candidate = next(
@@ -320,7 +320,10 @@ def test_gold_runtime_parameters_match_the_fixed_london_study_candidate():
     )
     agent = main.agents_map["XAUUSD"]
 
-    assert agent.highwin_parameters == candidate["parameters"]
+    from agents.xauusd_multiframe import MULTIFRAME_PARAMETERS
+    assert agent.highwin_parameters == MULTIFRAME_PARAMETERS
+    assert agent.highwin_parameters != candidate["parameters"]
+    assert main._XAU_SESSION_STUDY_STATUS["applies_to_active_strategy"] is False
     assert main._XAU_SESSION_STUDY_STATUS["candidate_count"] == 12
     assert main._XAU_SESSION_STUDY_STATUS["fit_validation_eligible_candidates"] == 0
     assert main._XAU_SESSION_STUDY_STATUS["all_candidates_rejected"] is True

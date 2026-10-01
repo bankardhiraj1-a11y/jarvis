@@ -175,16 +175,23 @@ class OandaPricingClient:
         if not self.access_token or not self.base_url:
             raise OandaCandleError("OANDA candle credentials or environment are unavailable")
 
+        params = {
+            "granularity": granularity,
+            "count": count,
+            "price": "BA",
+            "smooth": "false",
+        }
+        if granularity == "H4":
+            params.update({
+                "dailyAlignment": 17,
+                "alignmentTimezone": "America/New_York",
+            })
+
         try:
             response = self._session.get(
                 f"{self.base_url}/instruments/XAU_USD/candles",
                 headers={"Authorization": f"Bearer {self.access_token}", "Accept": "application/json"},
-                params={
-                    "granularity": granularity,
-                    "count": count,
-                    "price": "BA",
-                    "smooth": "false",
-                },
+                params=params,
                 timeout=15,
             )
         except requests.RequestException:

@@ -11,9 +11,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from database import Base
-from models import Trade
-from trading.holding_policy import holding_exit_decision, next_gold_rollover_deadline
+from models import AgentName, ManualPaperOrder, Trade, TradeType
+from trading.holding_policy import holding_exit_decision
 from trading.manual_gold_holding import manual_gold_holding_decision
+from trading.manual_paper_orders import (
+    manual_holding_decision,
+    manual_order_for_trade as general_manual_order_for_trade,
+)
 from trading.paper_limit_orders import (
     create_order, manual_order_for_trade, process_pending_orders,
 )
@@ -22,30 +26,74 @@ from trading.paper_limit_orders import (
 NOW = datetime(2026, 10, 1, 17, 20, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def manual_monitor():
+@pytest.fixture(params=("legacy", "general"), ids=("legacy-paper-limit-order", "manual-paper-order"))
+def manual_monitor(request):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as db:
-        order = create_order(db, {
-            "client_order_id": "isolated-unit-fixture",
-            "symbol": "XAUUSD", "side": "SELL",
-            "manual_order": True, "session_override": True,
-            "limit_price": 4177, "stop_loss": 4187,
-            "take_profit": 4161, "take_profit_2": 4151,
-            "quantity_troy_ounces": 15,
-        }, now=NOW - timedelta(minutes=2))
-        quote = {
-            "source": "OANDA", "environment": "practice",
-            "tradeable": True, "bid": 4177.5, "ask": 4177.8,
-            "close": 4177.65,
-            "timestamp": (NOW - timedelta(minutes=1)).isoformat(),
-        }
-        result = process_pending_orders(
-            db, quote, now=NOW - timedelta(minutes=1), accepted_entries_today=0,
-        )
-        assert result["filled_order_ids"] == [order.id]
-        legs = db.query(Trade).order_by(Trade.id).all()
+        entry_time = NOW - timedelta(minutes=1)
+        if request.param == "legacy":
+            order = create_order(db, {
+                "client_order_id": "isolated-unit-fixture",
+                "symbol": "XAUUSD", "side": "SELL",
+                "manual_order": True, "session_override": True,
+                "limit_price": 4177, "stop_loss": 4187,
+                "take_profit": 4161, "take_profit_2": 4151,
+                "quantity_troy_ounces": 15,
+            }, now=NOW - timedelta(minutes=2))
+            quote = {
+                "source": "OANDA", "environment": "practice",
+                "tradeable": True, "bid": 4177.5, "ask": 4177.8,
+                "close": 4177.65,
+                "timestamp": entry_time.isoformat(),
+            }
+            result = process_pending_orders(
+                db, quote, now=entry_time, accepted_entries_today=0,
+            )
+            assert result["filled_order_ids"] == [order.id]
+            legs = db.query(Trade).order_by(Trade.id).all()
+        else:
+            order = ManualPaperOrder(
+                client_order_id="isolated-general-manual-unit-fixture",
+                market="GOLD",
+                symbol="XAUUSD",
+                side="SELL",
+                order_type="LIMIT",
+                limit_price=4177,
+                stop_loss=4187,
+                take_profit=4161,
+                take_profit_2=4151,
+                quantity=15,
+                quantity_troy_ounces=15,
+                max_hold_minutes=25,
+                status="FILLED",
+                created_at=entry_time.replace(tzinfo=None) - timedelta(minutes=1),
+                expires_at=entry_time.replace(tzinfo=None) + timedelta(hours=2),
+                filled_at=entry_time.replace(tzinfo=None),
+                fill_price=4177.5,
+            )
+            db.add(order)
+            db.flush()
+            legs = [
+                Trade(
+                    agent=AgentName.XAUUSD,
+                    symbol="XAUUSD",
+                    trade_type=TradeType.SELL,
+                    quantity=7.5,
+                    entry_price=4177.5,
+                    stop_loss=4187,
+                    take_profit=target,
+                    status="OPEN",
+                    created_at=entry_time.replace(tzinfo=None),
+                    data_source="OANDA",
+                    entry_data_timestamp=entry_time.isoformat().replace("+00:00", "Z"),
+                )
+                for target in (4161, 4151)
+            ]
+            db.add_all(legs)
+            db.flush()
+            order.first_trade_id, order.second_trade_id = legs[0].id, legs[1].id
+            db.commit()
         clock = {"now": NOW, "price": 4175.0, "fresh": True}
         closed = []
 
@@ -66,12 +114,13 @@ def manual_monitor():
         namespace = {
             "datetime": Clock, "timezone": timezone, "timedelta": timedelta,
             "pytz": pytz,
-            "Trade": Trade, "AgentName": __import__("models").AgentName,
+            "Trade": Trade, "AgentName": AgentName,
             "manual_order_for_trade": manual_order_for_trade,
-            "general_manual_order_for_trade": lambda _db, _trade_id: None,
+            "general_manual_order_for_trade": general_manual_order_for_trade,
             "_provider_time": lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00")),
             "holding_exit_decision": holding_exit_decision,
             "manual_gold_holding_decision": manual_gold_holding_decision,
+            "manual_holding_decision": manual_holding_decision,
             "agents_map": {"XAUUSD": SimpleNamespace(
                 should_force_research_time_exit=lambda _: True,
                 mark_research_position_closed=lambda: closed.append(True),
@@ -107,17 +156,26 @@ def test_tp1_and_tp2_exit_separately_at_executable_quotes(manual_monitor):
     assert legs[1].exit_price == 4150.8
 
 
-def test_manual_elapsed_hold_does_not_close_without_target(manual_monitor):
+def test_manual_gold_remains_open_past_25_minutes_without_target_or_stop(manual_monitor):
     db, legs, monitor, clock, _ = manual_monitor
-    clock["now"] = NOW + timedelta(minutes=25)
+    clock["now"] = NOW + timedelta(minutes=35)
     assert monitor(db, legs[0], "XAUUSD")[0] == "PAPER_POSITION_OPEN"
     assert legs[0].status == "OPEN"
     assert legs[0].exit_price is None
 
 
-def test_rollover_manual_exit_waits_for_real_quote(manual_monitor):
+def test_manual_gold_safety_cutoff_closes_at_actual_quote(manual_monitor):
     db, legs, monitor, clock, _ = manual_monitor
-    clock["now"] = next_gold_rollover_deadline(NOW) - timedelta(minutes=1)
+    clock["now"] = NOW.replace(hour=23, minute=0)
+    clock["price"] = 4175.0
+    status, _ = monitor(db, legs[0], "XAUUSD")
+    assert status == "TRADE_CLOSED"
+    assert legs[0].exit_price == 4175.0
+
+
+def test_overdue_manual_gold_safety_exit_waits_for_fresh_quote(manual_monitor):
+    db, legs, monitor, clock, _ = manual_monitor
+    clock["now"] = NOW.replace(hour=23, minute=0)
     clock["fresh"] = False
     assert monitor(db, legs[0], "XAUUSD")[0] == "EXIT_PENDING_QUOTE"
     assert legs[0].status == "OPEN"
